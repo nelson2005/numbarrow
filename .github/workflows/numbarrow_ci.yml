@@ -46,6 +46,7 @@ jobs:
         pip install pandas==2.2.3
         pip install pyspark==3.5.7
         pip install -e .
+        pip check
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names
