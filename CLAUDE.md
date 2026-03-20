@@ -43,3 +43,4 @@ numbarrow — Numba adapters for PyArrow and PySpark. Enables working with Arrow
 - Never guess about things that can be verified — check the source of truth before making claims
 - Always clean `__pycache__` and numba cache (`~/.cache/numba`) before every pytest run — stale JIT artifacts cause false failures
 - Never put implementation planning details (task numbers, phase references, internal tracking) into code comments — comments must be context-independent
+- Never create PRs against upstream without explicit command — always default to the fork
