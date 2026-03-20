@@ -1,0 +1,11 @@
+{
+  "planPath": "docs/plans/2026-03-19-documentation-impl.md",
+  "tasks": [
+    {"id": 2, "subject": "Task 1: Add module docstrings and inline comments to source files", "status": "pending", "model": "sonnet"},
+    {"id": 3, "subject": "Task 2: Set up Sphinx documentation scaffold", "status": "pending", "blockedBy": [2], "model": "sonnet"},
+    {"id": 4, "subject": "Task 3: Write module .rst files with overviews", "status": "pending", "blockedBy": [2], "model": "sonnet"},
+    {"id": 5, "subject": "Task 4: Build and verify Sphinx docs", "status": "pending", "blockedBy": [3, 4], "model": "sonnet"},
+    {"id": 6, "subject": "Task 5: Expand README.md", "status": "pending", "model": "sonnet"}
+  ],
+  "lastUpdated": "2026-03-19T22:00:00Z"
+}
