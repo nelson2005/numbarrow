@@ -70,6 +70,8 @@ udf = make_mapinarrow_func(compute, broadcasts={"scale": 2.0})
 df_out = df_in.mapInArrow(udf, output_schema)
 ```
 
+See [test/demo_map_in_arrow.py](test/demo_map_in_arrow.py) for a complete runnable example.
+
 ## Compatibility
 
 | Dependency | Versions |
