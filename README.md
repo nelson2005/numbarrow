@@ -33,7 +33,7 @@ bitmap, data = arrow_array_adapter(arrow_array)
 def sum_non_null(data, bitmap):
     total = 0
     for i in range(len(data)):
-        if bitmap is not None and not is_null(i, bitmap):
+        if bitmap is None or not is_null(i, bitmap):
             total += data[i]
     return total
 

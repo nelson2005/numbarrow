@@ -26,7 +26,7 @@ extensions = [
     "sphinx_sitemap",
 ]
 
-templates_path = ["_templates"]
+templates_path = []
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 
