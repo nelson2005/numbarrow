@@ -63,3 +63,47 @@ jobs:
       run: |
         git clean -Xfd
         python -m build --wheel
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Determine version
+      shell: bash
+      run: |
+        if [ "${{ github.ref_type }}" == "tag" ]; then
+          echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+        else
+          BUILD_VERSION="0.1.${{ github.run_number }}"
+          echo "VERSION=${BUILD_VERSION}" >> $GITHUB_ENV
+        fi
+    - name: Write version to __init__.py
+      shell: bash
+      run: echo "__version__ = '${{ env.VERSION }}'" > numbarrow/__init__.py
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 pytest
+        pip install numba==0.63.0
+        pip install pandas==2.2.3
+        pip install pyspark==3.5.7
+        pip install -e .
+        pip check
+    - name: Lint with flake8
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    - name: Test with pytest
+      run: |
+        pytest
+    - name: Install build dependencies
+      run: |
+        pip install build==1.2.2.post1 wheel==0.45.0
+    - name: Build wheel
+      run: |
+        git clean -Xfd
+        python -m build --wheel
