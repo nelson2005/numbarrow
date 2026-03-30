@@ -4,7 +4,7 @@ import pyarrow as pa
 from numbarrow.core.adapters import arrow_array_adapter
 from numbarrow.core.is_null import is_null
 from numbarrow.utils.arrow_array_utils import (
-    create_str_array, uniform_arrow_array_adapter, create_bitmap
+    create_str_array, uniform_arrow_array_adapter
 )
 
 
@@ -86,11 +86,10 @@ class TestDateTimeOffset:
         assert data[1] == d2
 
     def test_timestamp_sliced(self):
-        from datetime import datetime
-        from dateutil import tz
-        t0 = datetime(2020, 1, 1, 0, 0, 0, tzinfo=tz.tzutc())
-        t1 = datetime(2020, 6, 15, 12, 30, 0, tzinfo=tz.tzutc())
-        t2 = datetime(2020, 12, 31, 23, 59, 59, tzinfo=tz.tzutc())
+        from datetime import datetime, timezone
+        t0 = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2020, 6, 15, 12, 30, 0, tzinfo=timezone.utc)
+        t2 = datetime(2020, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
         a = pa.array([t0, t1, t2], type=pa.timestamp("us", "UTC"))
         s = a[1:]
         bitmap, data = arrow_array_adapter(s)

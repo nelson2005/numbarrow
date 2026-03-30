@@ -28,15 +28,15 @@ def create_bitmap(bitmap_buf: Optional[pa.Buffer], offset: int = 0, length: int 
         return raw_bitmap
     # Re-pack bitmap bits starting from the offset bit position
     num_bytes = (length + 7) // 8
-    result = np.zeros(num_bytes, dtype=np.uint8)
-    for i in range(length):
-        src_byte = (offset + i) // 8
-        src_bit = (offset + i) % 8
-        if raw_bitmap[src_byte] & (1 << src_bit):
-            dst_byte = i // 8
-            dst_bit = i % 8
-            result[dst_byte] |= (1 << dst_bit)
-    return result
+    if length == 0:
+        return np.zeros(num_bytes, dtype=np.uint8)
+    bits = np.unpackbits(raw_bitmap, bitorder="little")
+    sliced_bits = bits[offset:offset + length]
+    pad = (-length) % 8
+    if pad:
+        sliced_bits = np.pad(sliced_bits, (0, pad), mode="constant")
+    result = np.packbits(sliced_bits, bitorder="little")
+    return result[:num_bytes]
 
 
 def create_str_array(pa_str_array: pa.StringArray) -> np.ndarray:
