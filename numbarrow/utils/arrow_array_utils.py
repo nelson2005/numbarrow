@@ -15,16 +15,28 @@ from typing import Dict, Optional, Tuple
 from numbarrow.utils.utils import arrays_viewers
 
 
-def create_bitmap(bitmap_buf: Optional[pa.Buffer]):
+def create_bitmap(bitmap_buf: Optional[pa.Buffer], offset: int = 0, length: int = 0):
     """ Create numpy array of uint8 type containing
-    bit-map of valid array entries """
+    bit-map of valid array entries, adjusted for array offset. """
     if bitmap_buf is None:
         return None
     bitmap_p = bitmap_buf.address
     bitmap_len = bitmap_buf.size
     bitmap_viewer = arrays_viewers[np.uint8]
-    bitmap = bitmap_viewer(bitmap_p, bitmap_len)
-    return bitmap
+    raw_bitmap = bitmap_viewer(bitmap_p, bitmap_len)
+    if offset == 0:
+        return raw_bitmap
+    # Re-pack bitmap bits starting from the offset bit position
+    num_bytes = (length + 7) // 8
+    result = np.zeros(num_bytes, dtype=np.uint8)
+    for i in range(length):
+        src_byte = (offset + i) // 8
+        src_bit = (offset + i) % 8
+        if raw_bitmap[src_byte] & (1 << src_bit):
+            dst_byte = i // 8
+            dst_bit = i % 8
+            result[dst_byte] |= (1 << dst_bit)
+    return result
 
 
 def create_str_array(pa_str_array: pa.StringArray) -> np.ndarray:
@@ -105,10 +117,9 @@ def uniform_arrow_array_adapter(pa_array: pa.Array) -> Tuple[Optional[np.ndarray
     data_viewer = arrays_viewers.get(data_np_ty, None)
     if data_viewer is None:
         raise ValueError(f"There is no {data_np_ty} in `utils.arrays_viewers`. Add it?")
-    data_p = data_buf.address
-    data_buf_byte_size = data_buf.size
     data_item_byte_size = np.dtype(data_np_ty).itemsize
-    data_len = data_buf_byte_size // data_item_byte_size
+    data_p = data_buf.address + pa_array.offset * data_item_byte_size
+    data_len = len(pa_array)
     data = data_viewer(data_p, data_len)
-    bitmap = create_bitmap(bitmap_buf)
+    bitmap = create_bitmap(bitmap_buf, pa_array.offset, len(pa_array))
     return bitmap, data
