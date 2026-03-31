@@ -44,3 +44,22 @@ numbarrow — Numba adapters for PyArrow and PySpark. Enables working with Arrow
 - Always clean `__pycache__` and numba cache (`~/.cache/numba`) before every pytest run — stale JIT artifacts cause false failures
 - Never put implementation planning details (task numbers, phase references, internal tracking) into code comments — comments must be context-independent
 - Never create PRs against upstream without explicit command — always default to the fork
+
+## Current Status (2026-03-30)
+
+### Branches
+- `main` — synced with upstream/main + fork-only files (CLAUDE.md, expanded CI, docs/plans)
+- `fix-arrow-offset` — feature branch: Arrow offset bug fix + macOS CI + MiniMax code review
+- `upstream-fix-arrow-offset` — cherry-picked offset fix for upstream PR (no fork-only files)
+
+### Open PRs
+- **nelson2005/numbarrow PR #4** (`fix-arrow-offset` → `main`) — fork PR, 19/19 CI pass
+- **Goykhman/numbarrow PR #3** (`upstream-fix-arrow-offset` → `main`) — upstream PR, 3/3 CI pass, awaiting review
+
+### Pending
+- Wait for Goykhman to review upstream PR #3
+- Merge fork PR #4 after upstream PR merges
+- Sync main with upstream after merge
+
+### Venv
+- Python 3.10 (recreated 2026-03-30 — use `python3.10 -m venv venv` not `python3`)
