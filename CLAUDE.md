@@ -45,19 +45,28 @@ numbarrow — Numba adapters for PyArrow and PySpark. Enables working with Arrow
 - Never put implementation planning details (task numbers, phase references, internal tracking) into code comments — comments must be context-independent
 - Never create PRs against upstream without explicit command — always default to the fork
 
-## Current Status (2026-03-30)
+## Current Status (2026-04-05)
 
 ### Branches
 - `main` — synced with upstream/main + fork-only files (CLAUDE.md, expanded CI, docs/plans)
-- `fix-arrow-offset` — feature branch: Arrow offset bug fix + macOS CI + MiniMax code review
-- `upstream-fix-arrow-offset` — cherry-picked offset fix for upstream PR (no fork-only files)
+- `fix-arrow-offset` — feature branch: Arrow offset bug fix + struct-level bitmap support
+- `upstream-fix-arrow-offset` — cherry-picked for upstream PR (no fork-only files)
 
 ### Open PRs
 - **nelson2005/numbarrow PR #4** (`fix-arrow-offset` → `main`) — fork PR, 19/19 CI pass
 - **Goykhman/numbarrow PR #3** (`upstream-fix-arrow-offset` → `main`) — upstream PR, 3/3 CI pass, awaiting review
 
+### Recent Work (2026-04-05)
+- Added struct-level bitmap support to `structured_array_adapter` (now returns 3-tuple)
+- Added `is_null_struct` helper for two-layer null checking (inspired by Awkward Array)
+- Added 10 new tests (8 for is_null_struct, 2 for struct null rows with offset)
+- Cherry-picked to upstream branch, CI passing on both fork (19/19) and upstream (3/3)
+- Replied to Goykhman's review comment on upstream PR #3 with explanation and links
+- Design spec: `docs/superpowers/specs/2026-04-05-struct-level-bitmap-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-04-05-struct-level-bitmap.md`
+
 ### Pending
-- Wait for Goykhman to review upstream PR #3
+- Wait for Goykhman to review upstream PR #3 (replied to his latest comment 2026-04-05)
 - Merge fork PR #4 after upstream PR merges
 - Sync main with upstream after merge
 
