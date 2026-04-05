@@ -1,0 +1,26 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-05-struct-level-bitmap.md",
+  "tasks": [
+    {
+      "id": 3,
+      "subject": "Task 1: Add is_null_struct helper to is_null.py",
+      "status": "pending",
+      "description": "**Goal:** Add a Numba-compiled helper that checks both struct-level and field-level bitmaps in one call.\n\n**Files:**\n- Modify: `numbarrow/core/is_null.py`\n- Test: `test/test_offset.py` (new `TestIsNullStruct`)\n\n**Acceptance Criteria:**\n- [ ] `is_null_struct` is @njit-compiled and callable from other @njit functions\n- [ ] Handles None for either or both bitmaps\n- [ ] Returns correct result for all 4 combinations (both valid, struct null, field null, both null)\n- [ ] Awkward Array credit comment present\n\n**Verify:** `source venv/bin/activate && find . -path ./venv -prune -o -name '__pycache__' -exec rm -rf {} + 2>/dev/null; rm -rf ~/.cache/numba; pytest test/test_offset.py::TestIsNullStruct -v`\n\n```json:metadata\n{\"files\": [\"numbarrow/core/is_null.py\", \"test/test_offset.py\"], \"verifyCommand\": \"source venv/bin/activate && find . -path ./venv -prune -o -name '__pycache__' -exec rm -rf {} + 2>/dev/null; rm -rf ~/.cache/numba; pytest test/test_offset.py::TestIsNullStruct -v\", \"acceptanceCriteria\": [\"is_null_struct is @njit-compiled\", \"handles None bitmaps\", \"correct for all 4 combinations\", \"Awkward Array credit\"], \"model\": \"sonnet\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 2: Return struct-level bitmap from structured_array_adapter",
+      "status": "pending",
+      "blockedBy": [3],
+      "description": "**Goal:** Extract the struct-level validity bitmap and return it as the first element of a 3-tuple.\n\n**Files:**\n- Modify: `numbarrow/utils/arrow_array_utils.py:75-95`\n- Modify: `numbarrow/core/adapters.py:103-105` (no change needed, passes through)\n- Test: `test/test_arrow_array_utils.py:17-31`\n- Test: `test/test_offset.py:128-161`\n\n**Acceptance Criteria:**\n- [ ] `structured_array_adapter` returns `(struct_bitmap, field_bitmaps, field_datas)`\n- [ ] struct_bitmap is None when no struct nulls\n- [ ] struct_bitmap is uint8 packed bitmap when struct has null rows\n- [ ] All existing struct tests updated and passing\n- [ ] Awkward Array credit comment present\n\n**Verify:** `source venv/bin/activate && find . -path ./venv -prune -o -name '__pycache__' -exec rm -rf {} + 2>/dev/null; rm -rf ~/.cache/numba; pytest test/test_arrow_array_utils.py::test_structured_array_adapter test/test_offset.py::TestStructOffset -v`\n\n```json:metadata\n{\"files\": [\"numbarrow/utils/arrow_array_utils.py\", \"numbarrow/core/adapters.py\", \"test/test_arrow_array_utils.py\", \"test/test_offset.py\"], \"verifyCommand\": \"source venv/bin/activate && find . -path ./venv -prune -o -name '__pycache__' -exec rm -rf {} + 2>/dev/null; rm -rf ~/.cache/numba; pytest test/test_arrow_array_utils.py::test_structured_array_adapter test/test_offset.py::TestStructOffset -v\", \"acceptanceCriteria\": [\"3-tuple return signature\", \"None when no struct nulls\", \"packed bitmap when struct nulls\", \"existing tests pass\", \"Awkward Array credit\"], \"model\": \"sonnet\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 3: Add struct null row tests",
+      "status": "pending",
+      "blockedBy": [3, 4],
+      "description": "**Goal:** Add tests for Goykhman's example (null struct rows with offset) and combined struct+field nulls.\n\n**Files:**\n- Modify: `test/test_offset.py`\n\n**Acceptance Criteria:**\n- [ ] test_struct_null_rows_sliced verifies struct bitmap for null rows with offset\n- [ ] test_struct_both_null_layers_sliced verifies both bitmap layers with offset\n- [ ] is_null_struct used in combined test\n- [ ] Full test suite passes\n\n**Verify:** `source venv/bin/activate && find . -path ./venv -prune -o -name '__pycache__' -exec rm -rf {} + 2>/dev/null; rm -rf ~/.cache/numba; pytest -v`\n\n```json:metadata\n{\"files\": [\"test/test_offset.py\"], \"verifyCommand\": \"source venv/bin/activate && find . -path ./venv -prune -o -name '__pycache__' -exec rm -rf {} + 2>/dev/null; rm -rf ~/.cache/numba; pytest -v\", \"acceptanceCriteria\": [\"test_struct_null_rows_sliced passes\", \"test_struct_both_null_layers_sliced passes\", \"is_null_struct used in combined test\", \"full suite passes\"], \"model\": \"sonnet\"}\n```"
+    }
+  ],
+  "lastUpdated": "2026-04-05T00:00:00Z"
+}
