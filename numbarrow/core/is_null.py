@@ -47,3 +47,28 @@ def unpack_booleans(offset: int, length: int, packed_data: np.ndarray) -> np.nda
         bit_idx = (offset + i) % 8
         result[i] = (packed_data[byte_idx] >> bit_idx) & 1
     return result
+
+
+# Two-layer struct nullability inspired by Awkward Array's BitMaskedArray(RecordArray)
+# design. See: https://awkward-array.org/doc/main/reference/generated/ak.contents.BitMaskedArray.html
+
+
+@njit(**default_jit_options)
+def is_null_struct(index_, struct_bitmap, field_bitmap):
+    """Check whether a struct field value is null at either the struct or field layer.
+
+    Arrow StructArrays carry a validity bitmap for the struct itself (is this
+    entire row null?) independent of each child field's bitmap (is this
+    particular field null within a non-null row?).  A value is null if either
+    layer marks it as null.
+
+    :param index_: zero-based element index
+    :param struct_bitmap: uint8 packed bitmap for struct-level validity, or None
+    :param field_bitmap: uint8 packed bitmap for field-level validity, or None
+    :returns: True if null at either layer
+    """
+    if struct_bitmap is not None and is_null(index_, struct_bitmap):
+        return True
+    if field_bitmap is not None and is_null(index_, field_bitmap):
+        return True
+    return False
