@@ -2,7 +2,7 @@ import numpy as np
 import pyarrow as pa
 
 from numbarrow.core.adapters import arrow_array_adapter
-from numbarrow.core.is_null import is_null
+from numbarrow.core.is_null import is_null, is_null_struct
 from numbarrow.utils.arrow_array_utils import (
     create_str_array, uniform_arrow_array_adapter
 )
@@ -176,3 +176,44 @@ class TestBitmapOffset:
         assert not is_null(4, bitmap)  # index 13
         assert not is_null(5, bitmap)  # index 14
         assert is_null(6, bitmap)      # index 15 -> None
+
+
+class TestIsNullStruct:
+    def test_both_valid(self):
+        valid_bm = np.array([0b11111111], dtype=np.uint8)
+        assert not is_null_struct(0, valid_bm, valid_bm)
+
+    def test_struct_null_only(self):
+        null_bm = np.array([0b11111110], dtype=np.uint8)
+        valid_bm = np.array([0b11111111], dtype=np.uint8)
+        assert is_null_struct(0, null_bm, valid_bm)
+
+    def test_field_null_only(self):
+        valid_bm = np.array([0b11111111], dtype=np.uint8)
+        null_bm = np.array([0b11111110], dtype=np.uint8)
+        assert is_null_struct(0, valid_bm, null_bm)
+
+    def test_both_null(self):
+        null_bm = np.array([0b11111110], dtype=np.uint8)
+        assert is_null_struct(0, null_bm, null_bm)
+
+    def test_struct_bitmap_none(self):
+        valid_bm = np.array([0b11111111], dtype=np.uint8)
+        assert not is_null_struct(0, None, valid_bm)
+
+    def test_field_bitmap_none(self):
+        valid_bm = np.array([0b11111111], dtype=np.uint8)
+        assert not is_null_struct(0, valid_bm, None)
+
+    def test_both_bitmap_none(self):
+        assert not is_null_struct(0, None, None)
+
+    def test_in_njit_context(self):
+        from numba import njit as njit_local
+        @njit_local
+        def check(idx, sb, fb):
+            return is_null_struct(idx, sb, fb)
+        null_bm = np.array([0b11111110], dtype=np.uint8)
+        valid_bm = np.array([0b11111111], dtype=np.uint8)
+        assert check(0, null_bm, valid_bm)
+        assert not check(0, valid_bm, valid_bm)
