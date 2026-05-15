@@ -8,7 +8,7 @@ numbarrow — Numba adapters for PyArrow and PySpark. Enables working with Arrow
 
 ## Build & Dev
 
-- Venv: `python3 -m venv venv && venv/bin/pip install -e . flake8 pytest`
+- Venv: `python3.12 -m venv venv && venv/bin/pip install -e . flake8 pytest`
 - Install: `pip install -e .`
 - Test: `pytest`
 - Lint: `flake8`
@@ -44,6 +44,7 @@ numbarrow — Numba adapters for PyArrow and PySpark. Enables working with Arrow
 - Always clean `__pycache__` and numba cache (`~/.cache/numba`) before every pytest run — stale JIT artifacts cause false failures
 - Never put implementation planning details (task numbers, phase references, internal tracking) into code comments — comments must be context-independent
 - Never create PRs against upstream without explicit command — always default to the fork
+- Use Glob instead of `find` for file searches. Bash `find` is only for operations with side effects (e.g., `-exec rm`)
 
 ## Venv
-- Python 3.10 (use `python3.10 -m venv venv` not `python3`)
+- Python 3.12 (use `python3.12 -m venv venv` not `python3`)
