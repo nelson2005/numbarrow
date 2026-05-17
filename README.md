@@ -67,6 +67,8 @@ def compute(data_dict, bitmap_dict, broadcasts):
     return {"output": result}
 
 udf = make_mapinarrow_func(compute, broadcasts={"scale": 2.0})
+df_in = ...           # caller-provided PySpark DataFrame
+output_schema = ...   # caller-provided PySpark StructType
 df_out = df_in.mapInArrow(udf, output_schema)
 ```
 
