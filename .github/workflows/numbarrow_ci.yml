@@ -45,7 +45,7 @@ jobs:
         pip install numba==${{ matrix.numba-version }}
         pip install pandas==2.3.2
         pip install pyspark==3.5.7
-        pip install -e .
+        pip install --ignore-requires-python -e .
         pip check
     - name: Lint with flake8
       run: |
@@ -91,7 +91,7 @@ jobs:
         pip install numba==0.63.0
         pip install pandas==2.3.2
         pip install pyspark==3.5.7
-        pip install -e .
+        pip install --ignore-requires-python -e .
         pip check
     - name: Lint with flake8
       run: |
