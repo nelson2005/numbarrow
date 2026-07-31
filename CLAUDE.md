@@ -12,9 +12,8 @@ numbarrow — Numba adapters for PyArrow and PySpark. Enables working with Arrow
 - Install: `pip install -e .`
 - Test: `pytest`
 - Lint: `flake8`
-- Python: >=3.10
-- Key dependencies: `numba>=0.60.0`, `pyarrow<=15.0.0`
-- Optional: `pyspark>=3.3.0` (test), `pandas>=1.5.0` (mapinarrow)
+- Supported Python and every dependency range: see `requires-python` and `dependencies` in [`pyproject.toml`](pyproject.toml). Those declarations are authoritative and machine-enforced, so they are deliberately not restated here — a copy in this file goes stale on an upstream sync without anything failing.
+- CI deliberately tests *below* the declared floor. The matrix covers Python 3.10, 3.11 and 3.12 and installs with `--ignore-requires-python`, because the package still builds, imports and passes the full suite on 3.10 and 3.11. Treat those jobs as regression signal, not as a supported configuration — pip refuses the install for a real user below the floor.
 
 ## Key Paths
 
