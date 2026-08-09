@@ -45,7 +45,9 @@ def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0
 def create_str_array(pa_str_array: pa.StringArray) -> tuple[np.ndarray | None, np.ndarray]:
     """ Copy data from densely packed `pa.StringArray` into
      padded numpy array of the character sequence type determined
-     by the length of the longest string. """
+     by the length of the longest string. Returns a tuple of the
+     validity bitmap (`None` when the array has no null buffer)
+     and the string array. """
     # Arrow StringArray layout: [validity_bitmap, offsets (int32), char_data (uint8)]
     # offsets[i] and offsets[i+1] delimit the byte range of string i in char_data
     bitmap_buf, offsets_buf, data_buf = pa_str_array.buffers()
@@ -58,7 +60,7 @@ def create_str_array(pa_str_array: pa.StringArray) -> tuple[np.ndarray | None, n
     logical_offsets = offsets_array[offset:offset + n + 1]
     diffs = np.diff(logical_offsets)
     if len(diffs) == 0:
-        return np.empty((0,), dtype="|U1")
+        return create_bitmap(bitmap_buf, pa_str_array.offset, 0), np.empty((0,), dtype="|U1")
     item_sz = diffs.max()
     str_array = np.empty((n,), dtype=f"|U{item_sz}")
     for i in range(n):

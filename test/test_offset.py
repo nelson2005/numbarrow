@@ -114,10 +114,18 @@ class TestStringOffset:
         s = a[1:]  # [None, "gamma", None, "epsilon"]
         bitmap, result = create_str_array(s)
         assert is_null(0, bitmap) and is_null(2, bitmap)
+        assert not is_null(1, bitmap) and not is_null(3, bitmap)
         assert len(result) == 4
         # Null strings become empty strings in the NumPy array
         assert result[1] == "gamma"
         assert result[3] == "epsilon"
+
+    def test_string_empty_slice(self):
+        a = pa.array(["alpha", None, "gamma"], type=pa.string())
+        s = a[3:]
+        bitmap, result = create_str_array(s)
+        assert bitmap is None or len(bitmap) == 0
+        assert len(result) == 0
 
     def test_string_with_embedded_nul(self):
         a = pa.array(["ab\x00cd", "ef\x00\x00gh", "plain"], type=pa.string())

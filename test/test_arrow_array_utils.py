@@ -12,7 +12,14 @@ def test_create_str_array():
     bitmap, np_a = create_str_array(pa_a)
     ref = ["first", "second", "", "third", "fourth element", "f"]
     assert is_null(2, bitmap)
+    assert not is_null(0, bitmap) and not is_null(1, bitmap) and not is_null(3, bitmap)
     assert all([np_a_e == ref_e for np_a_e, ref_e in zip(np_a, ref)])
+
+
+def test_create_str_array_empty():
+    bitmap, np_a = create_str_array(pa.array([], type=pa.string()))
+    assert bitmap is None
+    assert len(np_a) == 0
 
 
 def test_structured_array_adapter():
@@ -45,5 +52,6 @@ def test_uniform_arrow_array_adapter_1():
 
 if __name__ == "__main__":
     test_create_str_array()
+    test_create_str_array_empty()
     test_structured_array_adapter()
     test_uniform_arrow_array_adapter_1()
