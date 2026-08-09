@@ -10,11 +10,13 @@ to a user-supplied computation function.
 import numpy as np
 import pyarrow as pa
 
+from collections.abc import Callable
+
 from numbarrow.core.adapters import arrow_array_adapter
 
 
 def make_mapinarrow_func(
-    main_func: callable,
+    main_func: Callable,
     input_columns: list[str] | None = None,
     broadcasts: dict | None = None
 ):
@@ -24,7 +26,7 @@ def make_mapinarrow_func(
     :param main_func: should have the following signature:
         - `data_dict: dict[str, np.ndarray]`, values are arrays of data of various supported types
         - `bitmap_dict: dict[str, np.ndarray]`, values are uint8 aligned arrays of bitmap data
-        - `broadcasts` Optional[dict[str, Any]]
+        - `broadcasts` dict[str, Any] | None
         returns: dict[str, np.ndarray] that will be used to create PyArrow `RecordBatch`
     :param input_columns: optional list of column names that will be expected to be needed for in
     `data_dict` for the calculation done by `main_func`. When not given, all columns in the iterated
