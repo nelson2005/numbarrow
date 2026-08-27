@@ -104,8 +104,9 @@ def _(pa_array: pa.StructArray):
     return structured_array_adapter(pa_array)
 
 
+@arrow_array_adapter.register(pa.LargeStringArray)
 @arrow_array_adapter.register(pa.StringArray)
-def _(pa_array: pa.StringArray):
+def _(pa_array: pa.StringArray | pa.LargeStringArray):
     return create_str_array(pa_array)
 
 

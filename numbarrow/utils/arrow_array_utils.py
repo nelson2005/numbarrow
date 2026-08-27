@@ -42,24 +42,25 @@ def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0
     return result[:num_bytes]
 
 
-def create_str_array(pa_str_array: pa.StringArray) -> tuple[np.ndarray | None, np.ndarray]:
-    """ Copy data from densely packed `pa.StringArray` into
-     padded numpy array of the character sequence type determined
-     by the length of the longest string. """
-    # Arrow StringArray layout: [validity_bitmap, offsets (int32), char_data (uint8)]
-    # offsets[i] and offsets[i+1] delimit the byte range of string i in char_data
+def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tuple[np.ndarray | None, np.ndarray]:
+    """Copy data from a densely packed PyArrow string array into a padded
+    NumPy Unicode array.
+
+    StringArray uses int32 offsets; LargeStringArray uses int64 offsets.
+    """
     bitmap_buf, offsets_buf, data_buf = pa_str_array.buffers()
     data_p = data_buf.address
     offsets_p = offsets_buf.address
-    offsets_len = offsets_buf.size // np.dtype(np.int32).itemsize
-    offsets_array = arrays_viewers[np.int32](offsets_p, offsets_len)
+    offset_dtype = np.int64 if pa.types.is_large_string(pa_str_array.type) else np.int32
+    offsets_len = offsets_buf.size // np.dtype(offset_dtype).itemsize
+    offsets_array = arrays_viewers[offset_dtype](offsets_p, offsets_len)
     offset = pa_str_array.offset
     n = len(pa_str_array)
     logical_offsets = offsets_array[offset:offset + n + 1]
     diffs = np.diff(logical_offsets)
     if len(diffs) == 0:
         return create_bitmap(bitmap_buf, pa_str_array.offset, 0), np.empty((0,), dtype="|U1")
-    item_sz = diffs.max()
+    item_sz = int(diffs.max())
     str_array = np.empty((n,), dtype=f"|U{item_sz}")
     for i in range(n):
         start = logical_offsets[i]
@@ -67,7 +68,7 @@ def create_str_array(pa_str_array: pa.StringArray) -> tuple[np.ndarray | None, n
         length = int(end - start)
         s = ctypes.string_at(data_p + int(start), length).decode("utf-8")
         str_array[i] = s
-    bitmap = create_bitmap(bitmap_buf, pa_str_array.offset, len(pa_str_array))
+    bitmap = create_bitmap(bitmap_buf, offset, n)
     bitmap = bitmap.copy() if bitmap is not None and offset == 0 else bitmap
     return bitmap, str_array
 
