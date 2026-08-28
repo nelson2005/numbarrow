@@ -4,7 +4,7 @@ import pytest
 from numba import njit
 from numba.core.types import Array, float64, int32, int64, Optional, uint8
 
-from numbarrow.core.is_null import is_null
+from numbarrow.core.is_null import is_null, is_null_struct
 from numbarrow.core.configurations import jit_options
 from numbarrow.core.mapinarrow_factory import make_mapinarrow_func
 
@@ -13,7 +13,7 @@ pytest.importorskip("pandas")
 
 from pyspark.sql import functions as sf  # noqa: E402
 from pyspark.sql.types import (  # noqa: E402
-    DoubleType, IntegerType, LongType, StringType, StructField, StructType
+    BooleanType, DoubleType, IntegerType, LongType, StringType, StructField, StructType
 )
 
 
@@ -159,3 +159,67 @@ def test_null_magnitude_is_excluded_from_the_product(spark):
         for candidate in candidates
     )
     assert intensities["101888"] > 0.0
+
+
+def test_struct_null_row_survives_the_arrow_transport(spark):
+    # A struct-null row reaches the worker with no child validity buffer, so
+    # the struct-level bitmap is the only thing that records it. Spark's own
+    # transport is an Arrow IPC round trip, which preserves that shape.
+    schema = StructType([
+        StructField("id", StringType()),
+        StructField("point", StructType([StructField("v", LongType())])),
+    ])
+    df = spark.createDataFrame([("a", {"v": 10}), ("b", None), ("c", {"v": 30})], schema)
+
+    def main(data_dict, bitmap_dict, broadcasts):
+        struct_bitmap = bitmap_dict["point"]
+        field_bitmap = bitmap_dict["v"]
+        flags = np.array([
+            is_null_struct(i, struct_bitmap, field_bitmap) for i in range(len(data_dict["v"]))
+        ], dtype=np.bool_)
+        return {"id": data_dict["id"], "was_null": flags}
+
+    out_schema = StructType([
+        StructField("id", StringType()), StructField("was_null", BooleanType())
+    ])
+    rows = df.repartition(1).mapInArrow(make_mapinarrow_func(main), out_schema).collect()
+    assert {row["id"]: row["was_null"] for row in rows} == {"a": False, "b": True, "c": False}
+
+
+def test_null_free_batch_still_carries_its_bitmap_key(spark):
+    # The Arrow IPC reader normalises null_count == 0 to validity=None, so a
+    # batch that happens to contain no nulls arrives with no validity buffer.
+    # The key must still be there, or a job passes on one batch and raises
+    # KeyError on the next batch of the same schema.
+    schema = StructType([StructField("id", StringType()), StructField("magnitude", DoubleType())])
+    df = spark.createDataFrame([("a", 1.0), ("b", 2.0), ("c", 3.0)], schema)
+
+    def main(data_dict, bitmap_dict, broadcasts):
+        present = np.array(["magnitude" in bitmap_dict] * len(data_dict["id"]), dtype=np.bool_)
+        return {"id": data_dict["id"], "key_present": present}
+
+    out_schema = StructType([
+        StructField("id", StringType()), StructField("key_present", BooleanType())
+    ])
+    rows = df.repartition(1).mapInArrow(make_mapinarrow_func(main), out_schema).collect()
+    assert [row["key_present"] for row in rows] == [True, True, True]
+
+
+def test_colliding_struct_field_name_raises_through_spark(spark):
+    # Four ordinary Spark StructTypes convert to this shape: a top-level column
+    # and a struct field sharing a name. Silently dropping one of them also
+    # misaligns the row count, since the flattened field is longer.
+    schema = StructType([
+        StructField("id", LongType()),
+        StructField("order", StructType([
+            StructField("id", LongType()), StructField("total", DoubleType())
+        ])),
+    ])
+    df = spark.createDataFrame([(1, {"id": 10, "total": 1.5}), (2, {"id": 20, "total": 2.5})], schema)
+
+    def main(data_dict, bitmap_dict, broadcasts):
+        return {"id": data_dict["id"]}
+
+    out_schema = StructType([StructField("id", LongType())])
+    with pytest.raises(Exception, match="'id'"):
+        df.repartition(1).mapInArrow(make_mapinarrow_func(main), out_schema).collect()
