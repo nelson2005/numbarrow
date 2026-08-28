@@ -68,16 +68,21 @@ jobs:
 
   build-pyarrow-range:
     # The ends of the pyarrow range the dependency cap admits, as a separate
-    # job so that pinning them does not multiply the matrix above. 15.0.0 is
-    # the oldest release whose suite passes, with pip backtracking numpy to
-    # 1.26.4; 14.0.2 cannot be imported at all next to numba on Python 3.12 and
-    # dies with "numpy.core.multiarray failed to import".  Neither pandas nor pyspark is
+    # job so that pinning them does not multiply the matrix above. The real
+    # constraint is numpy, not pyarrow: 14.0.0 passes, but pyarrow below 16 is
+    # built against numpy 1 and dies with "numpy.core.multiarray failed to
+    # import" if numpy 2 is present, so the floor cell pins numpy too.
+    # Neither pandas nor pyspark is
     # installed here, so this is also the stock-install shape: the adapters
     # must resolve a dtype without importing pandas, and the spark tests
     # skip themselves.
     strategy:
       matrix:
-        pyarrow-version: [ "15.0.0", "24.0.0" ]
+        include:
+          - pyarrow-version: "14.0.0"
+            numpy-pin: "numpy<2"
+          - pyarrow-version: "24.0.0"
+            numpy-pin: ""
     runs-on: ubuntu-latest
 
     steps:
@@ -95,7 +100,7 @@ jobs:
         # python-dateutil is imported by the test suite; without it pytest
         # aborts collection and the job goes red having run nothing.
         pip install flake8 pytest setuptools python-dateutil
-        pip install pyarrow==${{ matrix.pyarrow-version }}
+        pip install pyarrow==${{ matrix.pyarrow-version }} ${{ matrix.numpy-pin }}
         pip install --ignore-requires-python -e .
         pip check
     - name: Test with pytest

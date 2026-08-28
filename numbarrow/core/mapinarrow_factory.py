@@ -79,13 +79,16 @@ def make_mapinarrow_func(
         ``data_dict`` is present, so a null-free batch is indexable exactly
         like a batch containing nulls.
 
-        For a structured column the struct-level validity is folded into each
-        field's bitmap, so one :func:`~numbarrow.core.is_null.is_null` call per
-        field sees both a null field and a row that is null as a whole.  Adapt
-        the column directly with
-        :func:`~numbarrow.core.adapters.arrow_array_adapter` to get the two
-        layers separately, for
-        :func:`~numbarrow.core.is_null.is_null_struct`.
+        For a ``StructArray`` column the struct-level validity is folded into
+        each field's bitmap, so one
+        :func:`~numbarrow.core.is_null.is_null` call per field sees both a null
+        field and a row that is null as a whole.
+
+        For a ``ListArray`` of structs the fold covers the flattened struct
+        elements, NOT the outer list rows.  A null outer row is not reported
+        anywhere, and because the adapter returns the flattened elements with
+        no offsets, such a row also shifts the element-to-row mapping.  Do not
+        pass a list column whose ``null_count`` is non-zero.
 
         A name may be claimed only once.  A struct field sharing a name with
         another selected column raises :class:`ValueError` rather than
@@ -121,6 +124,14 @@ def make_mapinarrow_func(
                     # be called, turning schemas that worked into a hard error,
                     # and for a list-of-struct column the name would suggest it
                     # covers the outer list rows, which it does not.
+                    if not col_datas:
+                        # A struct with no fields contributes no key at all, so
+                        # a requested column would vanish from both dicts
+                        # without a word.
+                        raise ValueError(
+                            f"column {col!r} of type {col_pa.type} has no fields, so it "
+                            f"contributes nothing to data_dict; drop it from input_columns"
+                        )
                     col_bitmaps = {
                         name: _fold_struct_validity(struct_bitmap, field_bitmap)
                         for name, field_bitmap in col_bitmaps.items()

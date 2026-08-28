@@ -142,3 +142,41 @@ def test_empty_batch():
     seen = run_batch(batch)
     assert seen["data"]["a"].tolist() == []
     assert "a" in seen["bitmap"]
+
+
+def test_zero_field_struct_column_is_refused_rather_than_dropped():
+    # A struct with no fields contributes no key, so a requested column used to
+    # vanish from both dicts without a word.
+    z = pa.array([{}, {}], type=pa.struct([]))
+    n = pa.array([1, 2], type=pa.int64())
+    batch = pa.RecordBatch.from_arrays([z, n], names=["z", "n"])
+    with pytest.raises(ValueError, match="'z'"):
+        run_batch(batch)
+
+
+def test_two_fields_of_one_struct_do_not_share_a_bitmap():
+    # With the struct-level bits folded in and no field-level nulls, both
+    # fields get the struct bitmap; without a per-field copy they would be the
+    # same array, and a caller writing through one would change the other.
+    inner_a = pa.array([1, 2], type=pa.int64())
+    inner_b = pa.array([3, 4], type=pa.int64())
+    col = pa.StructArray.from_arrays([inner_a, inner_b], ["a", "b"],
+                                     mask=pa.array([False, True]))
+    seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
+    bitmap_a, bitmap_b = seen["bitmap"]["a"], seen["bitmap"]["b"]
+    assert bitmap_a is not bitmap_b
+    assert bitmap_a.tolist() == bitmap_b.tolist()
+    bitmap_a[0] = 0
+    assert bitmap_b[0] != 0
+
+
+def test_a_list_column_with_a_null_row_is_documented_as_unsupported():
+    # The fold covers the flattened struct elements, never the outer list rows,
+    # so a null outer row is invisible AND shifts the element-to-row mapping.
+    # Pinned so the limitation cannot change silently.
+    ty = pa.list_(pa.struct([("v", pa.int64())]))
+    col = pa.array([[{"v": 1}], None, [{"v": 3}]], type=ty)
+    assert col.null_count == 1
+    seen = run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
+    assert seen["data"]["v"].tolist() == [1, 3]
+    assert seen["bitmap"]["v"] is None

@@ -57,6 +57,8 @@ def _(pa_array: pa.BooleanArray):
      when casting to numpy arrays of booleans.
     """
     bitmap_buf, data_buf = pa_array.buffers()
+    if data_buf is None:
+        raise ValueError(f"bool array of length {len(pa_array)} has no data buffer")
     data_buf_p = data_buf.address
     num_of_bool_elements = len(pa_array)
     total_bits = pa_array.offset + num_of_bool_elements
@@ -65,6 +67,9 @@ def _(pa_array: pa.BooleanArray):
     packed_boolean_data = packed_boolean_data_viewer(data_buf_p, num_of_bytes)
     data = unpack_booleans(pa_array.offset, num_of_bool_elements, packed_boolean_data)
     bitmap = create_bitmap(bitmap_buf, pa_array.offset, len(pa_array))
+    # A fresh allocation, but read-only all the same: the contract must not
+    # depend on which Arrow type the caller happened to pass.
+    data.flags.writeable = False
     return bitmap, data
 
 
@@ -84,6 +89,7 @@ def _(pa_array: pa.Date32Array):
     data = int32_data.astype(np.dtype("datetime64[D]"))
     if len(pa_array):
         assert int32_data.ctypes.data != data.ctypes.data
+    data.flags.writeable = False
     return bitmap, data
 
 

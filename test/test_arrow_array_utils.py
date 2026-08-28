@@ -31,7 +31,9 @@ def test_create_str_array():
     bitmap, np_a = create_str_array(pa_a)
     ref = ["first", "second", "", "third", "fourth element", "f"]
     assert is_null(2, bitmap) and all(not is_null(i, bitmap) for i in range(len(pa_a)) if i != 2)
-    assert all([np_a_e == ref_e for np_a_e, ref_e in zip(np_a, ref)])
+    # zip() stops at the shorter side, so a truncated result used to pass.
+    assert len(np_a) == len(ref)
+    assert list(np_a) == ref
 
 
 def test_create_str_array_long_with_null():
@@ -131,6 +133,10 @@ def test_sliced_list_returns_only_its_own_rows():
         "RecordBatch.slice().column()": table.to_batches()[0].slice(1, 2).column("c"),
         "to_batches(max_chunksize)": table.to_batches(max_chunksize=2)[1].column("c"),
         "ListArray.from_arrays": pa.ListArray.from_arrays(pa.array([2, 4, 6], pa.int32()), larr.values),
+        # Every producer above is a trailing slice, where offsets[n] happens to
+        # equal len(values), so the upper bound of the slice is never tested.
+        "middle row only": larr.slice(1, 1),
+        "leading two rows": larr.slice(0, 2),
     }
     for name, arr in producers.items():
         _, _, datas = arrow_array_adapter(arr)
@@ -175,7 +181,10 @@ def test_map_column_still_adapts():
 
 
 def test_unsupported_arrow_type_names_itself():
-    with pytest.raises(ValueError, match="float"):
+    # Matches the arrow type name and the map that would have to gain it. The
+    # pre-fix message named the numpy class, so a bare "float" match passed
+    # against the very code this guards.
+    with pytest.raises(ValueError, match=r"float\b.*arrow_to_numpy_dtypes"):
         uniform_arrow_array_adapter(pa.array([1.0, 2.0], type=pa.float32()))
 
 
@@ -257,6 +266,79 @@ def test_zero_length_list_array_shapes():
     ]:
         _, _, datas = arrow_array_adapter(arr)
         assert datas["v"].tolist() == [], label
+
+
+def test_every_adapter_path_returns_a_read_only_result():
+    # The contract must not depend on which Arrow type the caller passed. bool,
+    # string, large_string and date32 allocate fresh numpy arrays rather than
+    # viewing the Arrow buffer, and all four came back writable.
+    cases = {
+        "int32": pa.array([1, 2], type=pa.int32()),
+        "int64": pa.array([1, 2], type=pa.int64()),
+        "float64": pa.array([1.0, 2.0], type=pa.float64()),
+        "uint8": pa.array([1, 2], type=pa.uint8()),
+        "bool": pa.array([True, False], type=pa.bool_()),
+        "string": pa.array(["a", "b"], type=pa.string()),
+        "large_string": pa.array(["a", "b"], type=pa.large_string()),
+        "date32": pa.array([1, 2], type=pa.int32()).cast(pa.date32()),
+        "date64": pa.array([86400000], type=pa.int64()).cast(pa.date64()),
+        "timestamp": pa.array([1], type=pa.int64()).cast(pa.timestamp("ms")),
+    }
+    writable = [name for name, arr in cases.items()
+                if arrow_array_adapter(arr)[1].flags.writeable]
+    assert writable == []
+
+
+def test_read_only_holds_within_one_struct_column():
+    # The split used to land inside a single column: an int64 field read-only
+    # and a string field writable.
+    arr = pa.array([{"i": 1, "s": "a"}],
+                   type=pa.struct([("i", pa.int64()), ("s", pa.string())]))
+    _, _, datas = arrow_array_adapter(arr)
+    assert {name: d.flags.writeable for name, d in datas.items()} == {"i": False, "s": False}
+
+
+def test_bytes_under_a_null_slot_are_not_decoded():
+    # pc.if_else leaves the masked-out value's bytes in place, so decoding the
+    # slot hands back a value the caller explicitly masked out.
+    values = pa.array(["keepme", "SECRET"], type=pa.string())
+    masked = pa.compute.if_else(pa.array([True, False]), values, pa.scalar(None, pa.string()))
+    assert masked.to_pylist() == ["keepme", None]
+    bitmap, data = arrow_array_adapter(masked)
+    assert list(data) == ["keepme", ""]
+    assert is_null(1, bitmap) and not is_null(0, bitmap)
+
+
+def test_width_ignores_a_wide_value_under_a_null_slot():
+    values = pa.array(["ab", "x" * 40], type=pa.string())
+    masked = pa.compute.if_else(pa.array([True, False]), values, pa.scalar(None, pa.string()))
+    _, data = arrow_array_adapter(masked)
+    assert data.dtype == np.dtype("<U2")
+
+
+def test_a_null_data_buffer_names_the_type():
+    for arr in (pa.Array.from_buffers(pa.int64(), 0, [None, None]),
+                pa.Array.from_buffers(pa.bool_(), 0, [None, None])):
+        arr.validate(full=True)
+        with pytest.raises(ValueError, match="no data buffer"):
+            arrow_array_adapter(arr)
+
+
+def test_repeated_struct_field_names_raise_a_typed_error():
+    # Arrow permits them; keying by name cannot represent them, and
+    # StructArray.field(name) raised a bare KeyError naming nothing.
+    dup = pa.StructArray.from_arrays(
+        [pa.array([1, 2], type=pa.int64()), pa.array([3, 4], type=pa.int64())], ["v", "v"])
+    with pytest.raises(NotImplementedError, match="repeated field names"):
+        arrow_array_adapter(dup)
+
+
+def test_boolean_offset_crossing_a_byte_boundary():
+    values = [bool((i * 7) % 3) for i in range(20)]
+    arr = pa.array(values, type=pa.bool_())
+    for offset in (1, 7, 8, 9, 15):
+        _, data = arrow_array_adapter(arr.slice(offset))
+        assert data.tolist() == values[offset:], offset
 
 
 def test_result_is_read_only_whatever_the_buffer_provenance():

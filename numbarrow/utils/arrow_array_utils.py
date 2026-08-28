@@ -84,23 +84,52 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
     logical_offsets = offsets_array[offset:offset + n + 1]
     if n == 0:
         return create_bitmap(bitmap_buf, pa_str_array.offset, 0), np.empty((0,), dtype="|U1")
+    bounds = np.asarray(logical_offsets, dtype=np.int64)
+    # A null slot's offsets are not required to be empty: pc.if_else leaves the
+    # masked-out value's bytes in place. Those bytes belong to no logical value,
+    # so decoding them would hand the caller a value it explicitly masked out,
+    # size the array from a string that is not there, and raise
+    # UnicodeDecodeError on a spec-legal array whose dead bytes are not utf-8.
+    live = np.ones(n, dtype=bool)
+    if pa_str_array.null_count:
+        live = pa_str_array.is_valid().to_numpy(zero_copy_only=False).astype(bool)
     # The width is a character count. A difference of two Arrow offsets counts
     # utf-8 bytes instead, which over-allocates by up to 4x on non-ASCII input,
-    # and numpy holds the whole array resident at that width. So measure the
-    # decoded lengths first, keeping only the running maximum: holding every
-    # decoded string instead would trade the over-allocation for a list of n
-    # str objects, which is its own peak-memory regression on ASCII input.
-    item_sz = 0
-    for i in range(n):
-        start = int(logical_offsets[i])
-        length = int(logical_offsets[i + 1]) - start
-        item_sz = max(item_sz, len(ctypes.string_at(data_p + start, length).decode("utf-8")))
+    # and numpy holds the whole array resident at that width. In utf-8 every
+    # byte that is not a 0b10xxxxxx continuation byte starts exactly one
+    # character, so the character counts come from one vectorised pass over the
+    # bytes rather than from a second decode of every element.
+    span_start, span_stop = int(bounds[0]), int(bounds[n])
+    if span_stop > span_start:
+        raw = np.frombuffer(memoryview(data_buf), dtype=np.uint8,
+                            count=span_stop - span_start, offset=span_start)
+        starts_a_char = (raw & 0xC0) != 0x80
+        # reduceat sums raw[idx[i]:idx[i+1]]; for an empty range it yields
+        # raw[idx[i]] instead of 0, which can only overstate an empty slot by
+        # one and so cannot make the width too small.
+        # An empty trailing element starts at the very end of the span, and
+        # reduceat rejects an index equal to the length. One padding element
+        # makes that index legal; it can only ever be summed into an empty
+        # range, which the next line zeroes. Clamping instead would be wrong,
+        # since an element's start index is also the previous element's upper
+        # bound, so lowering it drops a character from the element before.
+        padded = np.append(starts_a_char, False)
+        char_counts = np.add.reduceat(padded, bounds[:n] - span_start)
+        char_counts = np.where(bounds[1:] > bounds[:n], char_counts, 0)
+    else:
+        char_counts = np.zeros(n, dtype=np.int64)
+    item_sz = int(char_counts[live].max()) if live.any() else 0
     str_array = np.empty((n,), dtype=f"|U{item_sz}")
     for i in range(n):
-        start = int(logical_offsets[i])
-        length = int(logical_offsets[i + 1]) - start
+        if not live[i]:
+            continue
+        start = int(bounds[i])
+        length = int(bounds[i + 1]) - start
         str_array[i] = ctypes.string_at(data_p + start, length).decode("utf-8")
     bitmap = create_bitmap(bitmap_buf, offset, n)
+    # A fresh numpy allocation, but read-only all the same, so that the
+    # contract does not depend on which Arrow type the caller happened to pass.
+    str_array.flags.writeable = False
     return bitmap, str_array
 
 
@@ -130,12 +159,22 @@ def structured_array_adapter(struct_array: pa.StructArray) -> tuple[
     struct_bitmap = create_bitmap(
         struct_bitmap_buf, struct_array.offset, len(struct_array)
     )
+    names = [data_type[i].name for i in range(len(data_type))]
+    duplicates = {name for name in names if names.count(name) > 1}
+    if duplicates:
+        # Arrow permits repeated field names; keying by name cannot represent
+        # them, and struct_array.field(name) raises a bare KeyError naming
+        # neither the struct nor the cause.
+        raise NotImplementedError(
+            f"Not implemented for a struct with repeated field names "
+            f"{sorted(duplicates)} in {struct_array.type}"
+        )
     bitmaps = {}
     datas = {}
     for field_ind in range(len(data_type)):
         field: pa.Field = data_type[field_ind]
         field_name = field.name
-        pa_array = struct_array.field(field_name)
+        pa_array = struct_array.field(field_ind)
         # Each child goes through the dispatcher rather than straight to
         # uniform_arrow_array_adapter. A boolean child is bit-packed, so the
         # uniform viewer would read it at one byte per element over a buffer

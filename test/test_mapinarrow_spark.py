@@ -162,7 +162,13 @@ def test_null_magnitude_is_excluded_from_the_product(spark):
         np.isclose(intensities["101888"], candidate, rtol=1e-12, atol=0.0)
         for candidate in candidates
     )
-    assert intensities["101888"] > 0.0
+    # Reading the null as a value folds a zero into the product, so the scale
+    # collapses to the bare index. `> 0.0` could not fail and did not say this.
+    collapsed = [area * index * 10 ** (-4) for index in (904, 905, 906)]
+    assert not any(
+        np.isclose(intensities["101888"], candidate, rtol=1e-9, atol=0.0)
+        for candidate in collapsed
+    )
 
 
 def test_struct_null_row_survives_the_arrow_transport(spark):

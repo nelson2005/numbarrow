@@ -112,7 +112,8 @@ def test_multi_buffer_struct_children_adapt_or_raise_a_typed_error():
         arr = pa.array([None], type=pa.struct([("f", child_ty)]))
         with pytest.raises(NotImplementedError) as excinfo:
             arrow_array_adapter(arr)
-        assert "f" in str(excinfo.value) or str(child_ty) in str(excinfo.value), name
+        # Not `"f" in message`: the letter f appears in almost any message.
+        assert str(child_ty) in str(excinfo.value) or "'f'" in str(excinfo.value), name
 
 
 def test_struct_with_a_string_field():

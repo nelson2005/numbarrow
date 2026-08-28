@@ -23,7 +23,10 @@ Supported types:
 - ``StructArray`` (returns a 3-tuple: the struct-level validity bitmap, then bitmaps
   and data as two dicts keyed by field name)
 - ``ListArray`` of structs (delegates to the StructArray adapter, honouring the list
-  array's own offset; any other element type raises ``NotImplementedError``)
+  array's own offset; any other element type raises ``NotImplementedError``). The
+  elements are flattened and no offsets are returned, so a null outer row is not
+  reported and shifts the element-to-row mapping; do not pass a list column whose
+  ``null_count`` is non-zero.
 
 A row that is null as a whole carries no validity bits in its fields, so the
 struct-level bitmap is the only record of it. Pass both layers to
