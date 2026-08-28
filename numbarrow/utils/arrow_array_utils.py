@@ -15,7 +15,15 @@ from numbarrow.utils.utils import arrays_viewers
 
 def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0):
     """ Create numpy array of uint8 type containing
-    bit-map of valid array entries, adjusted for array offset. """
+    bit-map of valid array entries, adjusted for array offset.
+
+    The returned array always owns its memory. The offset path below already
+    produced a fresh array through ``np.packbits``; the offset-0 path copies
+    so that ownership does not depend on a property the return value does not
+    carry. Without the copy an offset-0 bitmap aliases the Arrow validity
+    buffer, so writing to it nulls out the source, it reads as all-null once
+    the source is collected, and a short slice hands back bits the slice does
+    not own. """
     if bitmap_buf is None:
         return None
     bitmap_p = bitmap_buf.address
@@ -23,10 +31,10 @@ def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0
     bitmap_viewer = arrays_viewers[np.uint8]
     raw_bitmap = bitmap_viewer(bitmap_p, bitmap_len)
     if length == 0:
-        return raw_bitmap[:0]
+        return raw_bitmap[:0].copy()
     num_bytes = (length + 7) // 8
     if offset == 0:
-        return raw_bitmap[:num_bytes]
+        return raw_bitmap[:num_bytes].copy()
     # Re-pack bitmap bits starting from the offset bit position,
     # only reading the byte range that covers [offset, offset+length)
     first_byte = offset // 8
@@ -69,7 +77,6 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
         s = ctypes.string_at(data_p + int(start), length).decode("utf-8")
         str_array[i] = s
     bitmap = create_bitmap(bitmap_buf, offset, n)
-    bitmap = bitmap.copy() if bitmap is not None and offset == 0 else bitmap
     return bitmap, str_array
 
 

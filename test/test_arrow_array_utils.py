@@ -1,10 +1,25 @@
+import gc
+
 import numpy as np
 import pyarrow as pa
+from numbarrow.core.adapters import arrow_array_adapter
 from numbarrow.utils.arrow_array_utils import (
     create_str_array, structured_array_adapter,
     uniform_arrow_array_adapter
 )
 from numbarrow.core.is_null import is_null
+
+
+def owner_of(array):
+    """Walk an array's base chain and return the pyarrow object backing it."""
+    node = array
+    for _ in range(8):
+        node = node.obj if isinstance(node, memoryview) else getattr(node, "base", None)
+        if node is None:
+            return None
+        if isinstance(node, (pa.Buffer, pa.Array)):
+            return node
+    return None
 
 
 def test_create_str_array():
@@ -62,6 +77,39 @@ def test_uniform_arrow_array_adapter_1():
         not is_null(0, bitmap) and is_null(1, bitmap) and not is_null(2, bitmap)
         and not is_null(3, bitmap) and not is_null(4, bitmap)
     )
+
+
+def test_bitmap_at_offset_zero_does_not_alias_the_source():
+    source = pa.array([1, 2, None, 4, 5, 6, 7, 8, 9], type=pa.int64())
+    bitmap, _ = arrow_array_adapter(source)
+    bitmap[0] = 0
+    assert source.to_pylist() == [1, 2, None, 4, 5, 6, 7, 8, 9]
+
+
+def test_short_offset_zero_slice_does_not_hand_back_the_parents_bits():
+    parent = pa.array([1, 2, None] + list(range(4, 21)), type=pa.int64())
+    bitmap, _ = arrow_array_adapter(parent.slice(0, 4))
+    bitmap[0] = 0
+    assert parent.to_pylist()[:4] == [1, 2, None, 4]
+
+
+def test_bitmap_never_aliases_arrow_memory():
+    # The offset branch repacks through np.packbits and so already owned its
+    # memory; the offset-0 branch used to hand back a live view of the Arrow
+    # validity buffer. Neither may reach a pyarrow object.
+    source = pa.array([1, None, 3, 4, 5, 6, 7, 8, 9, 10], type=pa.int64())
+    for offset in (0, 1, 3):
+        bitmap, _ = arrow_array_adapter(source.slice(offset))
+        assert owner_of(bitmap) is None, offset
+
+
+def test_bitmap_survives_the_source_being_dropped():
+    source = pa.array([1, 2, None, 4], type=pa.int64())
+    bitmap, _ = arrow_array_adapter(source)
+    before = bitmap.copy()
+    del source
+    gc.collect()
+    assert bitmap.tolist() == before.tolist()
 
 
 if __name__ == "__main__":
