@@ -1,4 +1,5 @@
 import gc
+import random
 import subprocess
 import sys
 
@@ -173,6 +174,30 @@ def test_map_column_still_adapts():
 def test_unsupported_arrow_type_names_itself():
     with pytest.raises(ValueError, match="float"):
         uniform_arrow_array_adapter(pa.array([1.0, 2.0], type=pa.float32()))
+
+
+def test_cjk_string_width_counts_characters_not_bytes():
+    for arrow_ty in (pa.string(), pa.large_string()):
+        _, data = arrow_array_adapter(pa.array(["\u65e5" * 30, "z"], type=arrow_ty))
+        assert data.dtype == np.dtype("<U30"), arrow_ty
+        assert data[0] == "\u65e5" * 30 and data[1] == "z"
+
+
+def test_string_width_is_never_too_small():
+    rng = random.Random(20260828)
+    alphabets = ["abc", "\u00e9\u00f1", "\u65e5\u672c\u8a9e", "\U0001f600\U0001f680"]
+    for _ in range(400):
+        alphabet = rng.choice(alphabets)
+        values = ["".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 12)))
+                  for _ in range(rng.randrange(1, 6))]
+        _, data = arrow_array_adapter(pa.array(values, type=pa.string()))
+        assert list(data) == values
+        assert data.dtype.itemsize // 4 == max(len(v) for v in values) or not any(values)
+
+
+def test_all_empty_strings():
+    _, data = arrow_array_adapter(pa.array(["", "", ""], type=pa.string()))
+    assert list(data) == ["", "", ""]
 
 
 if __name__ == "__main__":

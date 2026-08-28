@@ -78,16 +78,21 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
     offset = pa_str_array.offset
     n = len(pa_str_array)
     logical_offsets = offsets_array[offset:offset + n + 1]
-    diffs = np.diff(logical_offsets)
-    if len(diffs) == 0:
+    if n == 0:
         return create_bitmap(bitmap_buf, pa_str_array.offset, 0), np.empty((0,), dtype="|U1")
-    item_sz = int(diffs.max())
-    str_array = np.empty((n,), dtype=f"|U{item_sz}")
+    decoded = []
     for i in range(n):
         start = logical_offsets[i]
         end = logical_offsets[i + 1]
         length = int(end - start)
-        s = ctypes.string_at(data_p + int(start), length).decode("utf-8")
+        decoded.append(ctypes.string_at(data_p + int(start), length).decode("utf-8"))
+    # The width is a character count, so it is measured after the decode. The
+    # difference of two Arrow offsets is a count of utf-8 bytes, which
+    # over-allocates by up to 4x on non-ASCII input, and numpy holds the whole
+    # array resident at that width.
+    item_sz = max(len(s) for s in decoded)
+    str_array = np.empty((n,), dtype=f"|U{item_sz}")
+    for i, s in enumerate(decoded):
         str_array[i] = s
     bitmap = create_bitmap(bitmap_buf, offset, n)
     return bitmap, str_array
