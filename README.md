@@ -72,7 +72,7 @@ output_schema = ...   # caller-provided PySpark StructType
 df_out = df_in.mapInArrow(udf, output_schema)
 ```
 
-See [test/demo_map_in_arrow.py](test/demo_map_in_arrow.py) for a complete runnable example.
+See [test/test_mapinarrow_spark.py](test/test_mapinarrow_spark.py) for a complete runnable example.
 
 ## Compatibility
 
