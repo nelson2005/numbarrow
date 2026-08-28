@@ -170,6 +170,11 @@ def test_map_column_still_adapts():
     assert datas["value"].tolist() == [1, 2]
 
 
+def test_unsupported_arrow_type_names_itself():
+    with pytest.raises(ValueError, match="float"):
+        uniform_arrow_array_adapter(pa.array([1.0, 2.0], type=pa.float32()))
+
+
 if __name__ == "__main__":
     test_create_str_array()
     test_create_str_array_long_with_null()

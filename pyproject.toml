@@ -9,7 +9,7 @@ include = ["numbarrow*"]
 [project]
 name = "numbarrow"
 dependencies = [
-    "numba>=0.60.0,<0.67.0",
+    "numba>=0.60.0,<0.68.0",
     "pyarrow<=24.0.0"
 ]
 dynamic = ["version"]
@@ -26,6 +26,7 @@ test = [
     "pandas>=1.5.0",
     "pyspark>=3.3.0,<4.0.0",
     "pytest",
+    "python-dateutil>=2.8.0",
     "setuptools>=75.0.0"
 ]
 mapinarrow = [

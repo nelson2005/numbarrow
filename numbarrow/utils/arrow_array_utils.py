@@ -13,6 +13,19 @@ import pyarrow as pa
 from numbarrow.utils.utils import arrays_viewers
 
 
+# The numpy view type for each Arrow type that has one, covering exactly the
+# keys of ``arrays_viewers``. Resolved directly rather than through
+# ``pa.DataType.to_pandas_dtype()``, which imports pandas, and so made a stock
+# install unable to adapt an int or a float column.
+arrow_to_numpy_dtypes = {
+    pa.bool_(): np.bool_,
+    pa.float64(): np.float64,
+    pa.int32(): np.int32,
+    pa.int64(): np.int64,
+    pa.uint8(): np.uint8,
+}
+
+
 def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0):
     """ Create numpy array of uint8 type containing
     bit-map of valid array entries, adjusted for array offset.
@@ -179,10 +192,13 @@ def uniform_arrow_array_adapter(pa_array: pa.Array) -> tuple[np.ndarray | None, 
      Returns views over bitmap and data contiguous memory regions as numpy arrays. """
     bitmap_buf, data_buf = pa_array.buffers()
     data_arrow_ty = pa_array.type
-    data_np_ty = data_arrow_ty.to_pandas_dtype()
+    data_np_ty = arrow_to_numpy_dtypes.get(data_arrow_ty, None)
     data_viewer = arrays_viewers.get(data_np_ty, None)
     if data_viewer is None:
-        raise ValueError(f"There is no {data_np_ty} in `utils.arrays_viewers`. Add it?")
+        raise ValueError(
+            f"There is no numpy view type for {data_arrow_ty} in "
+            f"`arrow_array_utils.arrow_to_numpy_dtypes`. Add it?"
+        )
     data_item_byte_size = np.dtype(data_np_ty).itemsize
     data_p = data_buf.address + pa_array.offset * data_item_byte_size
     data_len = len(pa_array)
