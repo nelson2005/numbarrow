@@ -92,7 +92,9 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pytest setuptools
+        # python-dateutil is imported by the test suite; without it pytest
+        # aborts collection and the job goes red having run nothing.
+        pip install flake8 pytest setuptools python-dateutil
         pip install pyarrow==${{ matrix.pyarrow-version }}
         pip install --ignore-requires-python -e .
         pip check

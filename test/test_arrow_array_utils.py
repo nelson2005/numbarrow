@@ -98,13 +98,16 @@ def test_short_offset_zero_slice_does_not_hand_back_the_parents_bits():
 
 
 def test_bitmap_never_aliases_arrow_memory():
-    # The offset branch repacks through np.packbits and so already owned its
-    # memory; the offset-0 branch used to hand back a live view of the Arrow
-    # validity buffer. Neither may reach a pyarrow object.
-    source = pa.array([1, None, 3, 4, 5, 6, 7, 8, 9, 10], type=pa.int64())
-    for offset in (0, 1, 3):
+    # Checked by mutating rather than by walking .base: a view built over a raw
+    # address also has no pyarrow object in its base chain, so a base-chain
+    # assertion would pass against the very code this guards.
+    for offset in (0, 1, 3, 8, 16):
+        source = pa.array([1, None, 3, 4, 5, 6, 7, 8, 9, 10, None, 12, 13, 14, 15, 16, 17, 18],
+                          type=pa.int64())
+        before = source.to_pylist()
         bitmap, _ = arrow_array_adapter(source.slice(offset))
-        assert owner_of(bitmap) is None, offset
+        bitmap[:] = 0
+        assert source.to_pylist() == before, offset
 
 
 def test_bitmap_survives_the_source_being_dropped():
@@ -223,6 +226,85 @@ def test_adapter_result_survives_an_unbound_source():
     )
     out = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
     assert out.returncode == 0 and out.stdout.strip() == "ok", (out.returncode, out.stderr[-400:])
+
+
+def test_zero_length_list_array_with_null_buffers():
+    # The Arrow spec lets a zero-length array carry null buffers and pyarrow's
+    # own full validation accepts one. Indexing a null offsets buffer
+    # segfaults rather than raising, which would take the whole process down,
+    # so this runs out of process.
+    src = (
+        "import pyarrow as pa\n"
+        "from numbarrow.core.adapters import arrow_array_adapter\n"
+        "ty = pa.list_(pa.struct([('v', pa.int64())]))\n"
+        "arr = pa.Array.from_buffers(ty, 0, [None, None],\n"
+        "                            children=[pa.array([], type=pa.struct([('v', pa.int64())]))])\n"
+        "arr.validate(full=True)\n"
+        "_, _, datas = arrow_array_adapter(arr)\n"
+        "assert datas['v'].tolist() == []\n"
+        "print('ok')\n"
+    )
+    out = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout.strip() == "ok", (out.returncode, out.stderr[-300:])
+
+
+def test_zero_length_list_array_shapes():
+    ty = pa.list_(pa.struct([("v", pa.int64())]))
+    for label, arr in [
+        ("empty", pa.array([], type=ty)),
+        ("sliced to zero", pa.array([[{"v": 1}]], type=ty).slice(0, 0)),
+        ("sliced to zero at the end", pa.array([[{"v": 1}]], type=ty).slice(1, 0)),
+    ]:
+        _, _, datas = arrow_array_adapter(arr)
+        assert datas["v"].tolist() == [], label
+
+
+def test_result_is_read_only_whatever_the_buffer_provenance():
+    # np.frombuffer reports read-only only for buffers pyarrow marks immutable,
+    # which is true after an IPC round trip and false for a locally built
+    # array. The result must not differ between the two, or a UDF compiles in a
+    # unit test and fails on a real Spark batch.
+    col = pa.array([10, 20, 30, 40], type=pa.int64())
+    batch = pa.RecordBatch.from_arrays([col], names=["v"])
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, batch.schema) as writer:
+        writer.write_batch(batch)
+    ipc_column = pa.ipc.open_stream(pa.BufferReader(sink.getvalue())).read_next_batch().column("v")
+    assert col.buffers()[1].is_mutable and not ipc_column.buffers()[1].is_mutable
+    for label, arr in [("local", col), ("ipc", ipc_column)]:
+        _, data = arrow_array_adapter(arr)
+        assert not data.flags.writeable, label
+        assert data.tolist() == [10, 20, 30, 40], label
+
+
+def test_a_bool_array_is_refused_by_the_uniform_adapter():
+    # Arrow packs booleans one bit per element, so there is no uniform view.
+    # The old dtype lookup succeeded and returned wrong values.
+    with pytest.raises(ValueError, match="bool"):
+        uniform_arrow_array_adapter(pa.array([True, False, True], type=pa.bool_()))
+
+
+def test_multi_buffer_types_name_themselves_in_the_uniform_adapter():
+    # Resolved before the buffers are unpacked, so a three-buffer layout
+    # reports its type instead of "too many values to unpack".
+    for arrow_ty, values in [(pa.string(), ["a"]), (pa.binary(), [b"a"]),
+                             (pa.list_(pa.int64()), [[1]])]:
+        with pytest.raises(ValueError) as excinfo:
+            uniform_arrow_array_adapter(pa.array(values, type=arrow_ty))
+        assert str(arrow_ty) in str(excinfo.value), arrow_ty
+
+
+def test_zero_length_date_and_timestamp():
+    for label, full in [
+        ("date32", pa.array([1, 2], type=pa.int32()).cast(pa.date32())),
+        ("date64", pa.array([86400000], type=pa.int64()).cast(pa.date64())),
+        ("timestamp", pa.array([1], type=pa.int64()).cast(pa.timestamp("ms"))),
+    ]:
+        empty = full.slice(0, 0)
+        _, data = arrow_array_adapter(empty)
+        assert len(data) == 0, label
+        _, _, datas = arrow_array_adapter(pa.StructArray.from_arrays([empty], ["f"]))
+        assert len(datas["f"]) == 0, label
 
 
 if __name__ == "__main__":

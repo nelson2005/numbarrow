@@ -15,6 +15,22 @@ from typing import Callable
 from numbarrow.core.adapters import arrow_array_adapter
 
 
+def _fold_struct_validity(struct_bitmap, field_bitmap):
+    """Combine a struct's own validity bits into one field's bits.
+
+    A row that is null as a whole leaves its fields' own bitmaps untouched, so
+    a field bitmap alone cannot see it. Arrow validity is 1 for valid, so the
+    two layers combine with a bitwise and.
+    """
+    if struct_bitmap is None:
+        return field_bitmap
+    if field_bitmap is None:
+        # Copied per field so that two fields do not share one array, where a
+        # caller writing through one would change the other.
+        return struct_bitmap.copy()
+    return struct_bitmap & field_bitmap
+
+
 def _claim_keys(target: dict, owners: dict[str, str], additions: dict, col: str, kind: str):
     """Merge one column's contribution into a batch-wide dict.
 
@@ -26,6 +42,11 @@ def _claim_keys(target: dict, owners: dict[str, str], additions: dict, col: str,
     for key, value in additions.items():
         owner = owners.get(key)
         if owner is not None:
+            if owner == col:
+                raise ValueError(
+                    f"{kind}_dict key {key!r} is claimed twice by column {col!r}: a struct "
+                    f"field shares its name with the column that contains it."
+                )
             raise ValueError(
                 f"{kind}_dict key {key!r} is claimed by column {owner!r} and again by column "
                 f"{col!r}. Struct fields are keyed by field name, so a field sharing a name "
@@ -56,11 +77,15 @@ def make_mapinarrow_func(
         ``bitmap_dict`` maps the same names to uint8 aligned arrays of bitmap
         data, or to ``None`` where every value is valid.  Every name in
         ``data_dict`` is present, so a null-free batch is indexable exactly
-        like a batch containing nulls.  A structured column additionally
-        contributes its struct-level bitmap under the column name, which is
-        the only place a row that is null as a whole is recorded, since its
-        fields' own bitmaps stay ``None`` in that case.  Pass both layers to
-        :func:`~numbarrow.core.is_null.is_null_struct` to test them together.
+        like a batch containing nulls.
+
+        For a structured column the struct-level validity is folded into each
+        field's bitmap, so one :func:`~numbarrow.core.is_null.is_null` call per
+        field sees both a null field and a row that is null as a whole.  Adapt
+        the column directly with
+        :func:`~numbarrow.core.adapters.arrow_array_adapter` to get the two
+        layers separately, for
+        :func:`~numbarrow.core.is_null.is_null_struct`.
 
         A name may be claimed only once.  A struct field sharing a name with
         another selected column raises :class:`ValueError` rather than
@@ -80,13 +105,26 @@ def make_mapinarrow_func(
             bitmap_dict: dict[str, np.ndarray | None] = {}
             data_owners: dict[str, str] = {}
             bitmap_owners: dict[str, str] = {}
-            input_columns_ = input_columns if input_columns is not None else batch.schema.names
+            requested = input_columns if input_columns is not None else batch.schema.names
+            # dict.fromkeys keeps first-seen order. Naming a column twice was
+            # harmless before the duplicate-key check existed, because the
+            # second pass produced the same arrays, so it stays harmless.
+            input_columns_ = list(dict.fromkeys(requested))
             for col in input_columns_:
                 col_pa: pa.Array = batch.column(col)
                 adapted = arrow_array_adapter(col_pa)
                 if len(adapted) == 3:
                     struct_bitmap, col_bitmaps, col_datas = adapted
-                    _claim_keys(bitmap_dict, bitmap_owners, {col: struct_bitmap}, col, "bitmap")
+                    # The struct-level bitmap is folded into each field rather
+                    # than published under the column's own name. Publishing it
+                    # would claim a key that another column's field may already
+                    # be called, turning schemas that worked into a hard error,
+                    # and for a list-of-struct column the name would suggest it
+                    # covers the outer list rows, which it does not.
+                    col_bitmaps = {
+                        name: _fold_struct_validity(struct_bitmap, field_bitmap)
+                        for name, field_bitmap in col_bitmaps.items()
+                    }
                 else:
                     col_bitmap, col_data = adapted
                     col_bitmaps = {col: col_bitmap}

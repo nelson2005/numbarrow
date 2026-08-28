@@ -17,8 +17,12 @@ from numbarrow.utils.utils import arrays_viewers
 # keys of ``arrays_viewers``. Resolved directly rather than through
 # ``pa.DataType.to_pandas_dtype()``, which imports pandas, and so made a stock
 # install unable to adapt an int or a float column.
+# ``pa.bool_()`` is deliberately absent even though ``np.bool_`` is a key of
+# ``arrays_viewers``: Arrow packs booleans one bit per element, so there is no
+# uniform view of them, and the old ``to_pandas_dtype()`` lookup succeeded with
+# an itemsize-1 viewer and returned wrong values. Boolean arrays go through the
+# dispatcher's own handler, which unpacks the bits.
 arrow_to_numpy_dtypes = {
-    pa.bool_(): np.bool_,
     pa.float64(): np.float64,
     pa.int32(): np.int32,
     pa.int64(): np.int64,
@@ -80,20 +84,22 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
     logical_offsets = offsets_array[offset:offset + n + 1]
     if n == 0:
         return create_bitmap(bitmap_buf, pa_str_array.offset, 0), np.empty((0,), dtype="|U1")
-    decoded = []
+    # The width is a character count. A difference of two Arrow offsets counts
+    # utf-8 bytes instead, which over-allocates by up to 4x on non-ASCII input,
+    # and numpy holds the whole array resident at that width. So measure the
+    # decoded lengths first, keeping only the running maximum: holding every
+    # decoded string instead would trade the over-allocation for a list of n
+    # str objects, which is its own peak-memory regression on ASCII input.
+    item_sz = 0
     for i in range(n):
-        start = logical_offsets[i]
-        end = logical_offsets[i + 1]
-        length = int(end - start)
-        decoded.append(ctypes.string_at(data_p + int(start), length).decode("utf-8"))
-    # The width is a character count, so it is measured after the decode. The
-    # difference of two Arrow offsets is a count of utf-8 bytes, which
-    # over-allocates by up to 4x on non-ASCII input, and numpy holds the whole
-    # array resident at that width.
-    item_sz = max(len(s) for s in decoded)
+        start = int(logical_offsets[i])
+        length = int(logical_offsets[i + 1]) - start
+        item_sz = max(item_sz, len(ctypes.string_at(data_p + start, length).decode("utf-8")))
     str_array = np.empty((n,), dtype=f"|U{item_sz}")
-    for i, s in enumerate(decoded):
-        str_array[i] = s
+    for i in range(n):
+        start = int(logical_offsets[i])
+        length = int(logical_offsets[i + 1]) - start
+        str_array[i] = ctypes.string_at(data_p + start, length).decode("utf-8")
     bitmap = create_bitmap(bitmap_buf, offset, n)
     return bitmap, str_array
 
@@ -185,24 +191,42 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
     # so a sliced or offset list column would hand back the elements of rows
     # it does not contain. The offsets are absolute into `values`, so the
     # first and last of them bound exactly the elements these rows own.
-    offsets = list_array.offsets
-    start = offsets[0].as_py()
-    stop = offsets[len(list_array)].as_py()
-    data_values: pa.StructArray = values.slice(start, stop - start)
+    if len(list_array) == 0:
+        # The Arrow spec lets a zero-length array carry null buffers, and
+        # pyarrow's own full validation accepts one. Indexing a null offsets
+        # buffer segfaults rather than raising, so there is nothing to read
+        # here and nothing that needs reading.
+        data_values: pa.StructArray = values.slice(0, 0)
+    else:
+        offsets = list_array.offsets
+        start = offsets[0].as_py()
+        stop = offsets[len(list_array)].as_py()
+        data_values = values.slice(start, stop - start)
     return structured_array_adapter(data_values)
 
 
 def uniform_arrow_array_adapter(pa_array: pa.Array) -> tuple[np.ndarray | None, np.ndarray]:
     """ NumPy adapter for PyArrow arrays with uniformly sized elements.
-     Returns views over bitmap and data contiguous memory regions as numpy arrays. """
-    bitmap_buf, data_buf = pa_array.buffers()
+
+    Returns the validity bitmap, which owns its memory, and a zero-copy numpy
+    view over the array's data buffer. The view is read-only: Arrow buffers are
+    immutable by contract, and this is what pyarrow's own
+    ``Array.to_numpy(zero_copy_only=True)`` returns. Declare numba signatures
+    that receive it with ``readonly=True``, which accepts writable arrays too.
+    """
     data_arrow_ty = pa_array.type
     data_np_ty = arrow_to_numpy_dtypes.get(data_arrow_ty, None)
     if data_np_ty is None:
+        # Resolved before unpacking the buffers, so that a type with a
+        # different buffer count reports its type rather than dying on the
+        # unpack with "too many values to unpack".
         raise ValueError(
             f"There is no numpy view type for {data_arrow_ty} in "
             f"`arrow_array_utils.arrow_to_numpy_dtypes`. Add it?"
         )
+    bitmap_buf, data_buf = pa_array.buffers()
+    if data_buf is None:
+        raise ValueError(f"{data_arrow_ty} array of length {len(pa_array)} has no data buffer")
     data_item_byte_size = np.dtype(data_np_ty).itemsize
     data_len = len(pa_array)
     # Viewed through the buffer rather than through its raw address, so that
@@ -218,5 +242,12 @@ def uniform_arrow_array_adapter(pa_array: pa.Array) -> tuple[np.ndarray | None, 
         count=data_len,
         offset=pa_array.offset * data_item_byte_size
     )
+    # np.frombuffer only reports read-only for buffers pyarrow marks immutable,
+    # which depends on where the buffer came from: a locally built array is
+    # mutable, while the same data after an Arrow IPC round trip, which is the
+    # transport mapInArrow uses, is not. Clearing the flag makes the result the
+    # same either way, instead of a UDF compiling in a unit test and failing on
+    # a real Spark batch.
+    data.flags.writeable = False
     bitmap = create_bitmap(bitmap_buf, pa_array.offset, len(pa_array))
     return bitmap, data

@@ -4,7 +4,7 @@ import pytest
 from numba import njit
 from numba.core.types import Array, float64, int32, int64, Optional, uint8
 
-from numbarrow.core.is_null import is_null, is_null_struct
+from numbarrow.core.is_null import is_null
 from numbarrow.core.configurations import jit_options
 from numbarrow.core.mapinarrow_factory import make_mapinarrow_func
 
@@ -167,8 +167,8 @@ def test_null_magnitude_is_excluded_from_the_product(spark):
 
 def test_struct_null_row_survives_the_arrow_transport(spark):
     # A struct-null row reaches the worker with no child validity buffer, so
-    # the struct-level bitmap is the only thing that records it. Spark's own
-    # transport is an Arrow IPC round trip, which preserves that shape.
+    # the field's own bitmap cannot see it. Spark's transport is an Arrow IPC
+    # round trip, which preserves that shape, and the folded bitmap catches it.
     schema = StructType([
         StructField("id", StringType()),
         StructField("point", StructType([StructField("v", LongType())])),
@@ -176,11 +176,12 @@ def test_struct_null_row_survives_the_arrow_transport(spark):
     df = spark.createDataFrame([("a", {"v": 10}), ("b", None), ("c", {"v": 30})], schema)
 
     def main(data_dict, bitmap_dict, broadcasts):
-        struct_bitmap = bitmap_dict["point"]
-        field_bitmap = bitmap_dict["v"]
-        flags = np.array([
-            is_null_struct(i, struct_bitmap, field_bitmap) for i in range(len(data_dict["v"]))
-        ], dtype=np.bool_)
+        bitmap = bitmap_dict["v"]
+        n = len(data_dict["v"])
+        flags = np.array(
+            [False] * n if bitmap is None else [is_null(i, bitmap) for i in range(n)],
+            dtype=np.bool_
+        )
         return {"id": data_dict["id"], "was_null": flags}
 
     out_schema = StructType([

@@ -2,7 +2,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from numbarrow.core.is_null import is_null, is_null_struct
+from numbarrow.core.is_null import is_null
 from numbarrow.core.mapinarrow_factory import make_mapinarrow_func
 
 
@@ -19,36 +19,64 @@ def run_batch(batch, input_columns=None):
     return seen
 
 
+def nulls(bitmap, n):
+    return [is_null(i, bitmap) for i in range(n)]
+
+
 def test_struct_null_row_reaches_the_udf():
     # Plain pa.array, from_pylist and StructArray.from_arrays(mask=...) all emit
-    # a struct-null row with no child validity buffer, so the struct-level
-    # bitmap is the only record that the row is null at all.
+    # a struct-null row with no child validity buffer, so the field's own bitmap
+    # cannot see it. The struct-level bits are folded in, so one is_null call
+    # per field does.
     col = pa.array([{"v": 10}, None, {"v": 30}], type=pa.struct([pa.field("v", pa.int64())]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-    struct_bitmap = seen["bitmap"]["s"]
-    assert struct_bitmap is not None
-    assert seen["bitmap"]["v"] is None
-    assert not is_null(0, struct_bitmap) and is_null(1, struct_bitmap) and not is_null(2, struct_bitmap)
-    assert is_null_struct(1, struct_bitmap, seen["bitmap"]["v"])
-    assert not is_null_struct(0, struct_bitmap, seen["bitmap"]["v"])
+    assert sorted(seen["bitmap"]) == ["v"]
+    assert nulls(seen["bitmap"]["v"], 3) == [False, True, False]
 
 
-def test_struct_bitmap_is_none_when_no_row_is_null():
+def test_no_bitmap_when_nothing_is_null_at_either_layer():
     col = pa.array([{"v": 10}, {"v": 30}], type=pa.struct([pa.field("v", pa.int64())]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-    assert "s" in seen["bitmap"] and seen["bitmap"]["s"] is None
+    assert "v" in seen["bitmap"] and seen["bitmap"]["v"] is None
     assert seen["data"]["v"].tolist() == [10, 30]
 
 
-def test_both_null_layers_are_distinguishable():
+def test_both_null_layers_are_folded_together():
     inner = pa.array([1, None, 3], type=pa.int64())
     col = pa.StructArray.from_arrays([inner], ["v"], mask=pa.array([False, False, True]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-    struct_bitmap, field_bitmap = seen["bitmap"]["s"], seen["bitmap"]["v"]
-    assert struct_bitmap is not None and field_bitmap is not None
-    assert not is_null_struct(0, struct_bitmap, field_bitmap)
-    assert is_null_struct(1, struct_bitmap, field_bitmap)   # null field, valid row
-    assert is_null_struct(2, struct_bitmap, field_bitmap)   # null row
+    #                      valid, null field, null row
+    assert nulls(seen["bitmap"]["v"], 3) == [False, True, True]
+
+
+def test_a_field_named_after_its_own_column_is_unambiguous():
+    # One column, one field, one key: nothing is lost, so nothing should raise.
+    col = pa.array([{"s": 1}], type=pa.struct([("s", pa.int64())]))
+    seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
+    assert seen["data"]["s"].tolist() == [1]
+
+
+def test_struct_column_named_after_another_columns_field():
+    # A struct column called 'region' next to store: struct<region, sqft>. The
+    # data keys are code/region/sqft, all distinct, so this must keep working.
+    region = pa.array([{"code": 1}, {"code": 2}], type=pa.struct([("code", pa.int64())]))
+    store = pa.array([{"region": 10, "sqft": 1.0}, {"region": 20, "sqft": 2.0}],
+                     type=pa.struct([("region", pa.int64()), ("sqft", pa.float64())]))
+    batch = pa.RecordBatch.from_arrays([region, store], names=["region", "store"])
+    for order in (["region", "store"], ["store", "region"]):
+        seen = run_batch(batch, input_columns=order)
+        assert sorted(seen["data"]) == ["code", "region", "sqft"]
+        assert seen["data"]["code"].tolist() == [1, 2]
+        assert seen["data"]["region"].tolist() == [10, 20]
+
+
+def test_duplicate_input_columns_is_harmless():
+    # Naming a column twice produced the same arrays twice before the
+    # duplicate-key check existed, so it must not become an error.
+    batch = pa.RecordBatch.from_arrays([pa.array([1, 2], type=pa.int64())], names=["a"])
+    seen = run_batch(batch, input_columns=["a", "a"])
+    assert seen["data"]["a"].tolist() == [1, 2]
+    assert sorted(seen["bitmap"]) == ["a"]
 
 
 def test_colliding_struct_field_name_raises():
@@ -69,24 +97,17 @@ def test_colliding_names_raise_whichever_column_comes_first():
             run_batch(batch, input_columns=order)
 
 
-def test_struct_field_named_after_its_own_column_raises():
-    col = pa.array([{"s": 1}], type=pa.struct([("s", pa.int64())]))
-    with pytest.raises(ValueError, match="'s'"):
-        run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-
-
 def test_null_free_column_arrives_as_none():
     # The same schema over two batches, one with a null and one without. A UDF
     # indexing bitmap_dict must find the key in both.
-    schema_col = "magnitude"
     with_null = pa.array([1.0, None, 3.0], type=pa.float64())
     without_null = pa.array([1.0, 2.0, 3.0], type=pa.float64())
     keys = []
     for col in (with_null, without_null):
-        seen = run_batch(pa.RecordBatch.from_arrays([col], names=[schema_col]))
+        seen = run_batch(pa.RecordBatch.from_arrays([col], names=["magnitude"]))
         keys.append(sorted(seen["bitmap"]))
-        assert schema_col in seen["bitmap"]
-    assert keys[0] == keys[1] == [schema_col]
+        assert "magnitude" in seen["bitmap"]
+    assert keys[0] == keys[1] == ["magnitude"]
 
 
 def test_null_free_column_of_every_supported_top_level_type():
@@ -107,10 +128,17 @@ def test_null_free_column_of_every_supported_top_level_type():
     assert all(seen["bitmap"][name] is None for name in columns)
 
 
-def test_list_of_struct_column_keys_the_struct_bitmap_by_column_name():
+def test_list_of_struct_column_keys_by_field_name():
     col = pa.array([[{"v": 1}, {"v": 2}], [{"v": 3}, {"v": 4}]],
                    type=pa.list_(pa.struct([("v", pa.int64())])))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
-    assert sorted(seen["bitmap"]) == ["rows", "v"]
+    assert sorted(seen["bitmap"]) == ["v"]
     assert sorted(seen["data"]) == ["v"]
     assert seen["data"]["v"].tolist() == [1, 2, 3, 4]
+
+
+def test_empty_batch():
+    batch = pa.RecordBatch.from_arrays([pa.array([], type=pa.int64())], names=["a"])
+    seen = run_batch(batch)
+    assert seen["data"]["a"].tolist() == []
+    assert "a" in seen["bitmap"]

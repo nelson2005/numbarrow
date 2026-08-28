@@ -59,6 +59,13 @@ result = sum_non_null(data, bitmap)  # 80
 Every other array type raises `NotImplementedError` naming the type, including a
 `ListArray` whose elements are not structs.
 
+Returned data arrays are read-only, matching
+`pyarrow.Array.to_numpy(zero_copy_only=True)`, because they view Arrow buffers
+the caller does not own. Declare numba signatures that receive them with
+`readonly=True`, which accepts writable arrays as well, or leave the function
+lazily typed and numba will infer it. Returned bitmaps own their memory and are
+writable.
+
 A uniform array adapts to a 2-tuple, `(bitmap, data)`, where `bitmap` is `None`
 when the array has no validity buffer. A struct or list-of-struct array adapts
 to a 3-tuple: the struct-level bitmap, then two dicts keyed by field name. The
@@ -77,8 +84,8 @@ def compute(data_dict, bitmap_dict, broadcasts):
     # data_dict:   {name: np.ndarray}, one entry per column, or one per field
     #              for a struct column
     # bitmap_dict: the same names, each a uint8 bitmap or None where every
-    #              value is valid; a struct column adds its struct-level
-    #              bitmap under the column name
+    #              value is valid; for a struct column the struct-level
+    #              validity is folded into each field's bitmap
     result = data_dict["value"] * broadcasts["scale"]
     return {"output": result}
 
