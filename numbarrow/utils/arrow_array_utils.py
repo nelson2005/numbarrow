@@ -132,9 +132,28 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
     Data is not copied as it is uniformly stored in a columnar format,
     that is, the underlying values are stored contiguously in a
     `pa.StructArray`.
+
+    The returned arrays are the flattened elements of every list in
+    ``list_array``, with no offsets telling a caller where one row's elements
+    end and the next row's begin. Mapping an element back to its row therefore
+    assumes every list has the same length, which is what the ``:param:``
+    contract above requires.
     """
     assert isinstance(list_array, pa.ListArray)
-    data_values: pa.StructArray = list_array.values
+    values: pa.Array = list_array.values
+    if not pa.types.is_struct(values.type):
+        raise NotImplementedError(
+            f"Not implemented for {list_array} of type {type(list_array)} "
+            f"and elements {list_array.type}"
+        )
+    # `values` is the whole child array and ignores this array's own offset,
+    # so a sliced or offset list column would hand back the elements of rows
+    # it does not contain. The offsets are absolute into `values`, so the
+    # first and last of them bound exactly the elements these rows own.
+    offsets = list_array.offsets
+    start = offsets[0].as_py()
+    stop = offsets[len(list_array)].as_py()
+    data_values: pa.StructArray = values.slice(start, stop - start)
     return structured_array_adapter(data_values)
 
 

@@ -1,7 +1,10 @@
 import gc
+import subprocess
+import sys
 
 import numpy as np
 import pyarrow as pa
+import pytest
 from numbarrow.core.adapters import arrow_array_adapter
 from numbarrow.utils.arrow_array_utils import (
     create_str_array, structured_array_adapter,
@@ -110,6 +113,53 @@ def test_bitmap_survives_the_source_being_dropped():
     del source
     gc.collect()
     assert bitmap.tolist() == before.tolist()
+
+
+def test_sliced_list_returns_only_its_own_rows():
+    rows = [[{"v": 10}, {"v": 11}], [{"v": 20}, {"v": 21}], [{"v": 30}, {"v": 31}]]
+    ty = pa.list_(pa.struct([("v", pa.int64())]))
+    larr = pa.array(rows, type=ty)
+    table = pa.table({"c": larr})
+    producers = {
+        "Array.slice": larr.slice(2, 1),
+        "Array[a:b]": larr[2:3],
+        "Table.slice().to_batches()": table.slice(2, 1).to_batches()[0].column("c"),
+        "RecordBatch.slice().column()": table.to_batches()[0].slice(1, 2).column("c"),
+        "to_batches(max_chunksize)": table.to_batches(max_chunksize=2)[1].column("c"),
+        "ListArray.from_arrays": pa.ListArray.from_arrays(pa.array([2, 4, 6], pa.int32()), larr.values),
+    }
+    for name, arr in producers.items():
+        _, _, datas = arrow_array_adapter(arr)
+        want = [element["v"] for row in arr.to_pylist() for element in row]
+        assert datas["v"].tolist() == want, name
+
+
+def test_sliced_list_with_a_null_row():
+    ty = pa.list_(pa.struct([("v", pa.int64())]))
+    larr = pa.array([[{"v": 1}], None, [{"v": 3}]], type=ty)
+    _, _, datas = arrow_array_adapter(larr.slice(1, 2))
+    assert datas["v"].tolist() == [3]
+
+
+def test_plain_list_raises_a_typed_error():
+    with pytest.raises(NotImplementedError) as excinfo:
+        arrow_array_adapter(pa.array([[1, 2], [3]], pa.list_(pa.int64())))
+    assert "int64" in str(excinfo.value)
+
+
+def test_plain_list_raises_the_same_typed_error_under_dash_O():
+    # The old guard was a bare assert, which -O strips; the input then reached
+    # a struct-field loop and raised a TypeError about pyarrow.lib.DataType.
+    src = (
+        "import pyarrow as pa\n"
+        "from numbarrow.core.adapters import arrow_array_adapter\n"
+        "try:\n"
+        "    arrow_array_adapter(pa.array([[1, 2], [3]], pa.list_(pa.int64())))\n"
+        "except NotImplementedError as exc:\n"
+        "    print('typed', 'int64' in str(exc))\n"
+    )
+    out = subprocess.run([sys.executable, "-O", "-c", src], capture_output=True, text=True)
+    assert out.stdout.strip() == "typed True", out
 
 
 if __name__ == "__main__":
