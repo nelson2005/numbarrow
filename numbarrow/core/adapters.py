@@ -88,7 +88,8 @@ def _(pa_array: pa.Date64Array):
 @arrow_array_adapter.register(pa.lib.DoubleArray)
 @arrow_array_adapter.register(pa.Int32Array)
 @arrow_array_adapter.register(pa.Int64Array)
-def _(pa_array: pa.lib.DoubleArray | pa.Int32Array | pa.Int64Array):
+@arrow_array_adapter.register(pa.UInt8Array)
+def _(pa_array: pa.lib.DoubleArray | pa.Int32Array | pa.Int64Array | pa.UInt8Array):
     return uniform_arrow_array_adapter(pa_array)
 
 

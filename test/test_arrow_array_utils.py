@@ -162,6 +162,14 @@ def test_plain_list_raises_the_same_typed_error_under_dash_O():
     assert out.stdout.strip() == "typed True", out
 
 
+def test_map_column_still_adapts():
+    # pa.MapArray is a pa.ListArray whose values are a key/value StructArray,
+    # so the struct guard must let it through.
+    m = pa.array([[("a", 1), ("b", 2)]], type=pa.map_(pa.string(), pa.int64()))
+    _, _, datas = arrow_array_adapter(m)
+    assert datas["value"].tolist() == [1, 2]
+
+
 if __name__ == "__main__":
     test_create_str_array()
     test_create_str_array_long_with_null()

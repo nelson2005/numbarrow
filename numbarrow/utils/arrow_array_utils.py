@@ -95,6 +95,10 @@ def structured_array_adapter(struct_array: pa.StructArray) -> tuple[
     - dict mapping field names to per-field validity bitmaps
     - dict mapping field names to per-field value arrays
     """
+    # Imported here rather than at module scope because the dispatcher's
+    # handlers are defined in terms of the adapters in this module.
+    from numbarrow.core.adapters import arrow_array_adapter
+
     assert isinstance(struct_array, pa.StructArray)
     data_type: pa.StructType = struct_array.type
     assert isinstance(data_type, pa.StructType)
@@ -108,7 +112,20 @@ def structured_array_adapter(struct_array: pa.StructArray) -> tuple[
         field: pa.Field = data_type[field_ind]
         field_name = field.name
         pa_array = struct_array.field(field_name)
-        bitmap, data = uniform_arrow_array_adapter(pa_array)
+        # Each child goes through the dispatcher rather than straight to
+        # uniform_arrow_array_adapter. A boolean child is bit-packed, so the
+        # uniform viewer would read it at one byte per element over a buffer
+        # holding one bit per element; and a child with more than two buffers
+        # has no uniform layout to view at all, so it needs its own handler or
+        # the dispatcher's typed error.
+        adapted = arrow_array_adapter(pa_array)
+        if len(adapted) != 2:
+            raise NotImplementedError(
+                f"Not implemented for struct field {field_name!r} of type {pa_array.type}: "
+                f"a structured child adapts to per-field dictionaries, which do not fit "
+                f"a single field's bitmap and data"
+            )
+        bitmap, data = adapted
         bitmaps[field_name] = bitmap
         datas[field_name] = data
     return struct_bitmap, bitmaps, datas
