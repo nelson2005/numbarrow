@@ -156,8 +156,8 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
     NumPy adapter of PyArrow array of same-length lists of structures.
 
     :param list_array: PyArrow array with elements being of `pa.ListType`.
-    Each list is in turn of the same length, and each element of the list
-    is of `pa.StructType`.
+        Each list is in turn of the same length, and each element of the list
+        is of `pa.StructType`.
 
     Returns a 3-tuple of: the struct-level validity bitmap (or ``None`` if
     all values are valid), a dictionary mapping field names to per-field
