@@ -68,16 +68,16 @@ jobs:
 
   build-pyarrow-range:
     # The ends of the pyarrow range the dependency cap admits, as a separate
-    # job so that pinning them does not multiply the matrix above. 16.1.0 is
-    # the oldest that imports at all on the supported Python floor: 14.0.2 is
-    # built against numpy 1 and dies with "numpy.core.multiarray failed to
-    # import" once numba pulls numpy 2.  Neither pandas nor pyspark is
+    # job so that pinning them does not multiply the matrix above. 15.0.0 is
+    # the oldest release whose suite passes, with pip backtracking numpy to
+    # 1.26.4; 14.0.2 cannot be imported at all next to numba on Python 3.12 and
+    # dies with "numpy.core.multiarray failed to import".  Neither pandas nor pyspark is
     # installed here, so this is also the stock-install shape: the adapters
     # must resolve a dtype without importing pandas, and the spark tests
     # skip themselves.
     strategy:
       matrix:
-        pyarrow-version: [ "16.1.0", "24.0.0" ]
+        pyarrow-version: [ "15.0.0", "24.0.0" ]
     runs-on: ubuntu-latest
 
     steps:

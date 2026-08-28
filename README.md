@@ -103,7 +103,7 @@ See [test/test_mapinarrow_spark.py](test/test_mapinarrow_spark.py) for a complet
 |---|---|
 | Python | 3.12+ |
 | numba | 0.60.0 – 0.67.0 |
-| pyarrow | 16.1 – 24.0 |
+| pyarrow | 15.0 – 24.0 |
 | pyspark | 3.3 – 3.x (optional) |
 | pandas | 1.5+ (optional, required by pyspark's `mapInArrow`) |
 
@@ -111,9 +111,11 @@ See [test/test_mapinarrow_spark.py](test/test_mapinarrow_spark.py) for a complet
 additionally exercises Python 3.10 and 3.11 with `--ignore-requires-python`,
 because the package still builds and passes there. Treat those as regression
 signal rather than as a supported configuration: pip refuses the install below
-the declared floor. pyarrow 14 and 15 are excluded by measurement rather than
-by policy, since they are built against numpy 1 and fail to import once numba
-resolves numpy 2.
+the declared floor. The pyarrow floor is measured rather than declared: 15.0.0
+is the oldest release whose suite passes, with pip backtracking numpy to
+1.26.4, while 14.0.2 cannot be imported at all next to numba on Python 3.12
+and dies with `numpy.core.multiarray failed to import`. `pyproject.toml`
+declares no pyarrow floor, so that install is reachable.
 
 ## Documentation
 
