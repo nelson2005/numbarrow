@@ -180,3 +180,17 @@ def test_a_list_column_with_a_null_row_is_documented_as_unsupported():
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
     assert seen["data"]["v"].tolist() == [1, 3]
     assert seen["bitmap"]["v"] is None
+
+
+def test_null_struct_element_inside_a_list_row_is_visible():
+    # Distinct from a null OUTER row, which is not reported at all: a null
+    # struct ELEMENT inside a list row does have struct-level validity, and the
+    # fold must surface it. No test covered this layer.
+    inner = pa.array([{"v": 1}, None, {"v": 3}, {"v": 4}],
+                     type=pa.struct([("v", pa.int64())]))
+    col = pa.ListArray.from_arrays(pa.array([0, 2, 4], type=pa.int32()), inner)
+    assert col.null_count == 0
+    seen = run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
+    bitmap = seen["bitmap"]["v"]
+    assert bitmap is not None
+    assert [is_null(i, bitmap) for i in range(4)] == [False, True, False, False]

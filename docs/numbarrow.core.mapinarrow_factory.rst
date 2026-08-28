@@ -24,12 +24,17 @@ Usage::
         return {"output_col": result}
 
 Every name in ``data_dict`` is also a key of ``bitmap_dict``, so a batch that
-happens to contain no nulls is indexable exactly like one that does. For a
-structured column the struct-level validity is folded into each field's bitmap,
-so a row that is null as a whole is visible to one ``is_null`` call per field;
-adapt the column directly to get the two layers separately. A name may
-be claimed only once: a struct field sharing a name with another selected column
-raises ``ValueError`` rather than replacing it.
+happens to contain no nulls is indexable exactly like one that does.
+
+For a ``StructArray`` column the struct-level validity is folded into each
+field's bitmap, so a row that is null as a whole is visible to one ``is_null``
+call per field. For a ``ListArray`` of structs the fold covers the flattened
+struct elements, NOT the outer list rows: a null outer row is not reported
+anywhere and also shifts the element-to-row mapping, so do not pass a list
+column whose ``null_count`` is non-zero.
+
+A name may be claimed only once: a struct field sharing a name with another
+selected column raises ``ValueError`` rather than replacing it::
 
     udf = make_mapinarrow_func(my_func, broadcasts={"scale": 1.5})
     df_out = df_in.mapInArrow(udf, output_schema)

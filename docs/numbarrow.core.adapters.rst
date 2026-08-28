@@ -32,6 +32,10 @@ A row that is null as a whole carries no validity bits in its fields, so the
 struct-level bitmap is the only record of it. Pass both layers to
 ``numbarrow.core.is_null.is_null_struct``.
 
+A string value whose last character is NUL comes back without it: numpy's
+fixed-width ``|U`` dtype pads with NUL, so a trailing NUL cannot be told from
+padding. Interior NULs are preserved.
+
 Returned data arrays are read-only, since they view Arrow buffers the caller
 does not own, which is what ``pyarrow.Array.to_numpy(zero_copy_only=True)``
 returns as well. Declare numba signatures that receive them with

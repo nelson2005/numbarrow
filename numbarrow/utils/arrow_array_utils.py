@@ -64,7 +64,10 @@ def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0
     if pad:
         sliced_bits = np.pad(sliced_bits, (0, pad), mode="constant")
     result = np.packbits(sliced_bits, bitorder="little")
-    return result[:num_bytes]
+    # Copied rather than sliced so that base is None on this path too: the
+    # docstring above promises ownership, and a slice of the packbits array
+    # keeps its parent alive instead.
+    return result[:num_bytes].copy()
 
 
 def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tuple[np.ndarray | None, np.ndarray]:
@@ -209,9 +212,11 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
     validity bitmaps (each ``None`` if all values are valid), and a
     dictionary mapping field names to the contiguous field data arrays.
 
-    Data is not copied as it is uniformly stored in a columnar format,
-    that is, the underlying values are stored contiguously in a
-    `pa.StructArray`.
+    Whether a field's data is copied depends on the field's type. A
+    fixed-width child is a zero-copy view over the contiguous
+    `pa.StructArray` values; a boolean child is bit-unpacked and a string
+    child is repacked into fixed-width Unicode, so both of those are copies.
+    Every returned data array is read-only either way.
 
     The returned arrays are the flattened elements of every list in
     ``list_array``, with no offsets telling a caller where one row's elements
@@ -268,6 +273,11 @@ def uniform_arrow_array_adapter(pa_array: pa.Array) -> tuple[np.ndarray | None, 
         raise ValueError(f"{data_arrow_ty} array of length {len(pa_array)} has no data buffer")
     data_item_byte_size = np.dtype(data_np_ty).itemsize
     data_len = len(pa_array)
+    if data_len == 0:
+        # An empty array's offset may still point past the end of an empty
+        # buffer, where np.frombuffer raises a bare "buffer is smaller than
+        # requested size" naming neither the array nor the type.
+        return create_bitmap(bitmap_buf, pa_array.offset, 0), np.empty((0,), dtype=data_np_ty)
     # Viewed through the buffer rather than through its raw address, so that
     # the result's ``.base`` chain reaches the pyarrow buffer and keeps it
     # alive. A view built over a bare address owns nothing and refers to

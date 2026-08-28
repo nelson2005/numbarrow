@@ -65,6 +65,10 @@ A `ListArray` of structs flattens its elements and returns no offsets, so a null
 outer row is neither reported nor accounted for in the element-to-row mapping.
 Do not pass a list column whose `null_count` is non-zero.
 
+A value whose last character is NUL comes back without it: numpy's fixed-width
+`|U` dtype pads with NUL, so a trailing NUL is indistinguishable from padding
+and cannot be represented. Interior NULs are preserved.
+
 Returned data arrays are read-only, matching
 `pyarrow.Array.to_numpy(zero_copy_only=True)`, because they view Arrow buffers
 the caller does not own. Declare numba signatures that receive them with
@@ -113,9 +117,14 @@ See [test/test_mapinarrow_spark.py](test/test_mapinarrow_spark.py) for a complet
 | numba | 0.60.0 – 0.67.0 |
 | pyarrow | 14.0 – 24.0 |
 | pyspark | 3.3 – 3.x (optional) |
-| pandas | 1.5+ (optional, required by pyspark's `mapInArrow`) |
+| pandas | 2.1.1+ (optional, required by pyspark's `mapInArrow`) |
 
-`pyproject.toml` is authoritative; the ranges above are the ones CI runs. CI
+`pyproject.toml` is authoritative. CI spans both ends of the numba and pyarrow
+rows (0.60.0, 0.63.0 and 0.67.0; 14.0.0 and 24.0.0). The pandas and pyspark rows
+are not swept: CI installs one version of each, pandas 2.3.2 and pyspark 3.5.7.
+The pandas floor is 2.1.1 rather than the 1.5.0 declared in the `mapinarrow`
+extra, because no pandas below 2.1.1 publishes a Python 3.12 wheel and the
+source build fails. CI
 additionally exercises Python 3.10 and 3.11 with `--ignore-requires-python`,
 because the package still builds and passes there. Treat those as regression
 signal rather than as a supported configuration: pip refuses the install below

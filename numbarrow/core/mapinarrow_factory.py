@@ -42,11 +42,9 @@ def _claim_keys(target: dict, owners: dict[str, str], additions: dict, col: str,
     for key, value in additions.items():
         owner = owners.get(key)
         if owner is not None:
-            if owner == col:
-                raise ValueError(
-                    f"{kind}_dict key {key!r} is claimed twice by column {col!r}: a struct "
-                    f"field shares its name with the column that contains it."
-                )
+            # owner is never col: a column contributes each key at most once,
+            # since its additions are a dict, and a struct with repeated field
+            # names is refused before it gets here.
             raise ValueError(
                 f"{kind}_dict key {key!r} is claimed by column {owner!r} and again by column "
                 f"{col!r}. Struct fields are keyed by field name, so a field sharing a name "
