@@ -66,12 +66,16 @@ def join_data(spark):
     return data_df.join(entities_df, on=["id", "partition_id"])
 
 
-bitmap_a_ty = Array(uint8, 1, "C")
+# Every array numbarrow hands a UDF is a view over an Arrow buffer the UDF does
+# not own, so the parameters are declared readonly. A readonly parameter accepts
+# a writable array as well, while a writable one rejects a readonly array at
+# compile time.
+bitmap_a_ty = Array(uint8, 1, "C", readonly=True)
 
-size_a_ty = Array(int64, 1, "C")
-coordinate_a_ty = Array(float64, 1, "C")
-index_a_ty = Array(int32, 1, "C")
-magnitude_a_ty = Array(float64, 1, "C")
+size_a_ty = Array(int64, 1, "C", readonly=True)
+coordinate_a_ty = Array(float64, 1, "C", readonly=True)
+index_a_ty = Array(int32, 1, "C", readonly=True)
+magnitude_a_ty = Array(float64, 1, "C", readonly=True)
 magnitude_bmap_ty = Optional(bitmap_a_ty)
 calculate_ret_ty = Array(float64, 1, "C")
 

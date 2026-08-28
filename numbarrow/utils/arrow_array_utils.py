@@ -198,15 +198,25 @@ def uniform_arrow_array_adapter(pa_array: pa.Array) -> tuple[np.ndarray | None, 
     bitmap_buf, data_buf = pa_array.buffers()
     data_arrow_ty = pa_array.type
     data_np_ty = arrow_to_numpy_dtypes.get(data_arrow_ty, None)
-    data_viewer = arrays_viewers.get(data_np_ty, None)
-    if data_viewer is None:
+    if data_np_ty is None:
         raise ValueError(
             f"There is no numpy view type for {data_arrow_ty} in "
             f"`arrow_array_utils.arrow_to_numpy_dtypes`. Add it?"
         )
     data_item_byte_size = np.dtype(data_np_ty).itemsize
-    data_p = data_buf.address + pa_array.offset * data_item_byte_size
     data_len = len(pa_array)
-    data = data_viewer(data_p, data_len)
+    # Viewed through the buffer rather than through its raw address, so that
+    # the result's ``.base`` chain reaches the pyarrow buffer and keeps it
+    # alive. A view built over a bare address owns nothing and refers to
+    # nothing, so once the caller drops the last reference to the source the
+    # result reads freed memory: correct at tiny sizes, wrong from a few
+    # hundred elements, and a segfault once the allocation is large enough to
+    # be returned to the system.
+    data = np.frombuffer(
+        memoryview(data_buf),
+        dtype=data_np_ty,
+        count=data_len,
+        offset=pa_array.offset * data_item_byte_size
+    )
     bitmap = create_bitmap(bitmap_buf, pa_array.offset, len(pa_array))
     return bitmap, data

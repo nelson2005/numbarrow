@@ -200,6 +200,31 @@ def test_all_empty_strings():
     assert list(data) == ["", "", ""]
 
 
+def test_adapter_result_keeps_the_arrow_buffer_alive():
+    for arrow_ty, values in [
+        (pa.int32(), [1, 2, 3]), (pa.int64(), [1, 2, 3]), (pa.float64(), [1.0, 2.0]),
+        (pa.uint8(), [1, 2]),
+    ]:
+        _, data = arrow_array_adapter(pa.array(values, type=arrow_ty))
+        assert owner_of(data) is not None, arrow_ty
+
+
+def test_adapter_result_survives_an_unbound_source():
+    # The source is never bound to a name, so it is collectable the moment the
+    # adapter returns. A view that owns nothing reads freed memory: correct at
+    # tiny sizes, wrong in the middle, and a segfault once large enough.
+    src = (
+        "import numpy as np, pyarrow as pa\n"
+        "from numbarrow.core.adapters import arrow_array_adapter\n"
+        "for n in (2, 64, 128, 32768, 1 << 17):\n"
+        "    bitmap, data = arrow_array_adapter(pa.array(np.arange(n, dtype=np.int64)))\n"
+        "    assert data.tolist() == list(range(n)), n\n"
+        "print('ok')\n"
+    )
+    out = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout.strip() == "ok", (out.returncode, out.stderr[-400:])
+
+
 if __name__ == "__main__":
     test_create_str_array()
     test_create_str_array_long_with_null()
