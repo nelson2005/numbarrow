@@ -3,6 +3,10 @@ name: docs
 on:
   push:
     branches: [ "main" ]
+  # Build on pull requests too, without deploying. On push alone the -W below
+  # first runs when a branch is already merged, so a docs regression reaches
+  # main, and the same job publishes, before anything reports it.
+  pull_request:
 
 permissions:
   contents: write
@@ -32,6 +36,9 @@ jobs:
         run: sphinx-build -W -b html docs/ docs/_build/html
 
       - name: Deploy to GitHub Pages
+        # Only main publishes. A pull request builds to prove the docs are
+        # sound and stops there.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
