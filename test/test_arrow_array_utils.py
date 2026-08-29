@@ -298,6 +298,51 @@ def test_read_only_holds_within_one_struct_column():
     assert {name: d.flags.writeable for name, d in datas.items()} == {"i": False, "s": False}
 
 
+def test_read_only_holds_for_an_empty_array():
+    # The contract must not depend on the batch's length either. Every
+    # fixed-width and string path returns a fresh np.empty for a zero-length
+    # array, and each of those came back writable while its non-empty
+    # counterpart did not.
+    cases = {
+        "int32": pa.array([], type=pa.int32()),
+        "int64": pa.array([], type=pa.int64()),
+        "float64": pa.array([], type=pa.float64()),
+        "uint8": pa.array([], type=pa.uint8()),
+        "bool": pa.array([], type=pa.bool_()),
+        "string": pa.array([], type=pa.string()),
+        "large_string": pa.array([], type=pa.large_string()),
+        "date32": pa.array([1], type=pa.int32()).cast(pa.date32()).slice(0, 0),
+    }
+    writable = [name for name, arr in cases.items()
+                if arrow_array_adapter(arr)[1].flags.writeable]
+    assert writable == []
+    # ...and through a struct column, which reaches the same paths per field.
+    empty_struct = pa.StructArray.from_arrays(
+        [pa.array([], type=pa.int64()), pa.array([], type=pa.string())], ["i", "s"])
+    _, _, datas = arrow_array_adapter(empty_struct)
+    assert {name: d.flags.writeable for name, d in datas.items()} == {"i": False, "s": False}
+
+
+def test_unsupported_type_errors_name_the_type_without_the_data():
+    # Both messages used to interpolate the array itself, whose repr carries
+    # every value it holds: unbounded in size and a copy of the caller's data
+    # in whatever log catches the traceback.
+    rows = [[i, i + 1] for i in range(500)]
+    with pytest.raises(NotImplementedError) as excinfo:
+        arrow_array_adapter(pa.array(rows, type=pa.list_(pa.int64())))
+    message = str(excinfo.value)
+    assert "int64" in message
+    assert "499" not in message
+    assert len(message) < 200
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        arrow_array_adapter(pa.array(["abcdef"] * 500, type=pa.binary()))
+    message = str(excinfo.value)
+    assert "binary" in message
+    assert "abcdef" not in message
+    assert len(message) < 200
+
+
 def test_bytes_under_a_null_slot_are_not_decoded():
     # pc.if_else leaves the masked-out value's bytes in place, so decoding the
     # slot hands back a value the caller explicitly masked out.

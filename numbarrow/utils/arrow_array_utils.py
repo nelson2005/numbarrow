@@ -86,7 +86,11 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
     n = len(pa_str_array)
     logical_offsets = offsets_array[offset:offset + n + 1]
     if n == 0:
-        return create_bitmap(bitmap_buf, pa_str_array.offset, 0), np.empty((0,), dtype="|U1")
+        # Read-only like the non-empty path below, so that the contract does
+        # not depend on whether the batch happened to be empty.
+        empty = np.empty((0,), dtype="|U1")
+        empty.flags.writeable = False
+        return create_bitmap(bitmap_buf, pa_str_array.offset, 0), empty
     bounds = np.asarray(logical_offsets, dtype=np.int64)
     # A null slot's offsets are not required to be empty: pc.if_else leaves the
     # masked-out value's bytes in place. Those bytes belong to no logical value,
@@ -227,9 +231,12 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
     assert isinstance(list_array, pa.ListArray)
     values: pa.Array = list_array.values
     if not pa.types.is_struct(values.type):
+        # The array itself is deliberately not interpolated: its repr carries
+        # every value it holds, which grows without bound and puts the
+        # caller's data into whatever log catches the traceback.
         raise NotImplementedError(
-            f"Not implemented for {list_array} of type {type(list_array)} "
-            f"and elements {list_array.type}"
+            f"Not implemented for a list array of {len(list_array)} rows of "
+            f"type {list_array.type}: elements are {values.type}, not a struct"
         )
     # `values` is the whole child array and ignores this array's own offset,
     # so a sliced or offset list column would hand back the elements of rows
@@ -277,7 +284,11 @@ def uniform_arrow_array_adapter(pa_array: pa.Array) -> tuple[np.ndarray | None, 
         # An empty array's offset may still point past the end of an empty
         # buffer, where np.frombuffer raises a bare "buffer is smaller than
         # requested size" naming neither the array nor the type.
-        return create_bitmap(bitmap_buf, pa_array.offset, 0), np.empty((0,), dtype=data_np_ty)
+        empty = np.empty((0,), dtype=data_np_ty)
+        # Read-only like the non-empty path below, so that the contract does
+        # not depend on whether the batch happened to be empty.
+        empty.flags.writeable = False
+        return create_bitmap(bitmap_buf, pa_array.offset, 0), empty
     # Viewed through the buffer rather than through its raw address, so that
     # the result's ``.base`` chain reaches the pyarrow buffer and keeps it
     # alive. A view built over a bare address owns nothing and refers to

@@ -46,7 +46,13 @@ def cast_64bit_date_arrow_to_numpy_array(pa_array: pa.Array, np_dtype: np.dtype)
 @singledispatch
 def arrow_array_adapter(pa_array: pa.Array):
     """ Dispatcher for PyArrow array adapters of various types. """
-    raise NotImplementedError(f"Not implemented for {pa_array} of type {type(pa_array)} and elements {pa_array.type}")
+    # The array itself is deliberately not interpolated: its repr carries every
+    # value it holds, which grows without bound and puts the caller's data into
+    # whatever log catches the traceback.
+    raise NotImplementedError(
+        f"Not implemented for an array of {len(pa_array)} elements "
+        f"of type {pa_array.type}"
+    )
 
 
 @arrow_array_adapter.register(pa.BooleanArray)
