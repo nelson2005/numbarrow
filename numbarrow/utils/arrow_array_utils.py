@@ -75,6 +75,10 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
     NumPy Unicode array.
 
     StringArray uses int32 offsets; LargeStringArray uses int64 offsets.
+
+    The padding is NUL, so a value whose last character is NUL cannot be told
+    from a shorter one and raises ``ValueError`` rather than coming back
+    truncated. Leading and interior NULs are representable and are preserved.
     """
     bitmap_buf, offsets_buf, data_buf = pa_str_array.buffers()
     data_p = data_buf.address
@@ -121,8 +125,23 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
         # since an element's start index is also the previous element's upper
         # bound, so lowering it drops a character from the element before.
         padded = np.append(starts_a_char, False)
+        non_empty = bounds[1:] > bounds[:n]
         char_counts = np.add.reduceat(padded, bounds[:n] - span_start)
-        char_counts = np.where(bounds[1:] > bounds[:n], char_counts, 0)
+        char_counts = np.where(non_empty, char_counts, 0)
+        # A fixed-width |U element pads with NUL, so a trailing NUL in the
+        # value is indistinguishable from that padding: assigning "ab\x00"
+        # stores "ab", and the value never round trips. Leading and interior
+        # NULs are unaffected and stay supported. Refused rather than
+        # truncated, since a silently shortened string is still a wrong answer.
+        last_byte = np.where(non_empty, bounds[1:] - 1 - span_start, 0)
+        trailing_nul = non_empty & live & (raw[last_byte] == 0)
+        if trailing_nul.any():
+            index_ = int(np.flatnonzero(trailing_nul)[0])
+            raise ValueError(
+                f"element {index_} of a {n}-element string array ends in a NUL, "
+                f"which a numpy fixed-width unicode array cannot represent: a "
+                f"trailing NUL is how it pads a shorter element"
+            )
     else:
         char_counts = np.zeros(n, dtype=np.int64)
     item_sz = int(char_counts[live].max()) if live.any() else 0
@@ -226,7 +245,9 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
     ``list_array``, with no offsets telling a caller where one row's elements
     end and the next row's begin. Mapping an element back to its row therefore
     assumes every list has the same length, which is what the ``:param:``
-    contract above requires.
+    contract above requires. A null row breaks that assumption outright, since
+    it contributes no elements, so ``list_array.null_count`` must be zero and
+    a non-zero one raises ``NotImplementedError``.
     """
     assert isinstance(list_array, pa.ListArray)
     values: pa.Array = list_array.values
@@ -237,6 +258,19 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
         raise NotImplementedError(
             f"Not implemented for a list array of {len(list_array)} rows of "
             f"type {list_array.type}: elements are {values.type}, not a struct"
+        )
+    # A null outer row holds no elements, so the flattened result is shorter
+    # than the row count and every element after the null belongs to a
+    # different row than its index says. The returned shape carries no offsets
+    # and so cannot express that, and the struct-level fold covers the elements
+    # rather than the rows, so the null is not reported anywhere either.
+    # Refused rather than answered wrongly.
+    if list_array.null_count:
+        raise NotImplementedError(
+            f"Not implemented for a list array of {len(list_array)} rows of type "
+            f"{list_array.type} with {list_array.null_count} null row(s): a null "
+            f"row contributes no elements, so the flattened result would "
+            f"silently misalign with the rows"
         )
     # `values` is the whole child array and ignores this array's own offset,
     # so a sliced or offset list column would hand back the elements of rows

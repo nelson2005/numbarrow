@@ -48,7 +48,8 @@ def _claim_keys(target: dict, owners: dict[str, str], additions: dict, col: str,
             raise ValueError(
                 f"{kind}_dict key {key!r} is claimed by column {owner!r} and again by column "
                 f"{col!r}. Struct fields are keyed by field name, so a field sharing a name "
-                f"with another column would replace it."
+                f"with another column would replace it. Alias one of them in the projection "
+                f"that feeds mapInArrow."
             )
         owners[key] = col
         target[key] = value
@@ -83,10 +84,11 @@ def make_mapinarrow_func(
         field and a row that is null as a whole.
 
         For a ``ListArray`` of structs the fold covers the flattened struct
-        elements, NOT the outer list rows.  A null outer row is not reported
-        anywhere, and because the adapter returns the flattened elements with
-        no offsets, such a row also shifts the element-to-row mapping.  Do not
-        pass a list column whose ``null_count`` is non-zero.
+        elements, NOT the outer list rows.  A null outer row can be reported
+        nowhere, and because the adapter returns the flattened elements with
+        no offsets, such a row also shifts the element-to-row mapping, so a
+        list column whose ``null_count`` is non-zero raises
+        ``NotImplementedError``.
 
         A name may be claimed only once.  A struct field sharing a name with
         another selected column raises :class:`ValueError` rather than

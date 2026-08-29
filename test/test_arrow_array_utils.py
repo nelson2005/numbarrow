@@ -144,11 +144,33 @@ def test_sliced_list_returns_only_its_own_rows():
         assert datas["v"].tolist() == want, name
 
 
-def test_sliced_list_with_a_null_row():
+def test_sliced_list_sees_the_slice_null_count_not_the_parent_s():
+    # The guard must read the slice's own null count. A slice that still
+    # contains the null row is refused; one that excludes it adapts normally,
+    # which also keeps the offset handling this case was written to cover.
     ty = pa.list_(pa.struct([("v", pa.int64())]))
     larr = pa.array([[{"v": 1}], None, [{"v": 3}]], type=ty)
-    _, _, datas = arrow_array_adapter(larr.slice(1, 2))
+    with pytest.raises(NotImplementedError, match="null row"):
+        arrow_array_adapter(larr.slice(1, 2))
+    _, _, datas = arrow_array_adapter(larr.slice(2, 1))
     assert datas["v"].tolist() == [3]
+
+
+def test_a_trailing_nul_is_refused_rather_than_truncated():
+    # numpy pads a short |U element with NUL, so a trailing NUL in the value is
+    # indistinguishable from that padding: "ab\x00" used to come back as "ab".
+    for values in (["ab\x00", "abc"], ["ab\x00\x00"], ["ok", "x\x00"]):
+        with pytest.raises(ValueError, match="ends in a NUL"):
+            arrow_array_adapter(pa.array(values, type=pa.string()))
+        with pytest.raises(ValueError, match="ends in a NUL"):
+            arrow_array_adapter(pa.array(values, type=pa.large_string()))
+    # Leading and interior NULs are representable and stay supported.
+    _, data = arrow_array_adapter(pa.array(["a\x00b", "\x00ab", "abc"], type=pa.string()))
+    assert data.tolist() == ["a\x00b", "\x00ab", "abc"]
+    # A null slot is never decoded, so dead bytes ending in NUL do not trip it.
+    masked = pa.array(["ab\x00", "ok"], type=pa.string()).take(pa.array([None, 1], type=pa.int32()))
+    _, data = arrow_array_adapter(masked)
+    assert data.tolist() == ["", "ok"]
 
 
 def test_plain_list_raises_a_typed_error():

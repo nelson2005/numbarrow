@@ -170,16 +170,16 @@ def test_two_fields_of_one_struct_do_not_share_a_bitmap():
     assert bitmap_b[0] != 0
 
 
-def test_a_list_column_with_a_null_row_is_documented_as_unsupported():
+def test_a_list_column_with_a_null_row_is_refused():
     # The fold covers the flattened struct elements, never the outer list rows,
-    # so a null outer row is invisible AND shifts the element-to-row mapping.
-    # Pinned so the limitation cannot change silently.
+    # so a null outer row is invisible AND shifts the element-to-row mapping:
+    # this used to answer [1, 3] for three rows, with element 1 belonging to
+    # row 3. Nothing in the returned shape can express that, so it is refused.
     ty = pa.list_(pa.struct([("v", pa.int64())]))
     col = pa.array([[{"v": 1}], None, [{"v": 3}]], type=ty)
     assert col.null_count == 1
-    seen = run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
-    assert seen["data"]["v"].tolist() == [1, 3]
-    assert seen["bitmap"]["v"] is None
+    with pytest.raises(NotImplementedError, match="null row"):
+        run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
 
 
 def test_null_struct_element_inside_a_list_row_is_visible():

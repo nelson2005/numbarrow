@@ -62,12 +62,13 @@ names. A `MapArray` is a `ListArray` whose values are a key/value struct, so it
 adapts to those two fields rather than raising.
 
 A `ListArray` of structs flattens its elements and returns no offsets, so a null
-outer row is neither reported nor accounted for in the element-to-row mapping.
-Do not pass a list column whose `null_count` is non-zero.
+outer row can be neither reported nor accounted for in the element-to-row
+mapping. A list column whose `null_count` is non-zero raises
+`NotImplementedError` rather than returning a result that silently misaligns.
 
-A value whose last character is NUL comes back without it: numpy's fixed-width
-`|U` dtype pads with NUL, so a trailing NUL is indistinguishable from padding
-and cannot be represented. Interior NULs are preserved.
+A string value whose last character is NUL raises `ValueError`: numpy's
+fixed-width `|U` dtype pads with NUL, so a trailing NUL is indistinguishable
+from padding and cannot be represented. Leading and interior NULs are preserved.
 
 Returned data arrays are read-only, matching
 `pyarrow.Array.to_numpy(zero_copy_only=True)`, because they view Arrow buffers
