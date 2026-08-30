@@ -5,6 +5,7 @@ import sys
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from numbarrow.core.adapters import arrow_array_adapter
 from numbarrow.utils.arrow_array_utils import (
@@ -168,7 +169,16 @@ def test_a_trailing_nul_is_refused_rather_than_truncated():
     _, data = arrow_array_adapter(pa.array(["a\x00b", "\x00ab", "abc"], type=pa.string()))
     assert data.tolist() == ["a\x00b", "\x00ab", "abc"]
     # A null slot is never decoded, so dead bytes ending in NUL do not trip it.
-    masked = pa.array(["ab\x00", "ok"], type=pa.string()).take(pa.array([None, 1], type=pa.int32()))
+    # Built with pc.if_else, which leaves the masked-out bytes in the buffer:
+    # .take() emits a byte-EMPTY null slot (offsets [0, 0, 2]), so the guard
+    # short-circuits on non_empty and the `live` term is never reached.
+    masked = pc.if_else(pa.array([False, True]),
+                        pa.array(["ab\x00", "ok"], type=pa.string()),
+                        pa.scalar(None, pa.string()))
+    assert masked.to_pylist() == [None, "ok"]
+    offsets = masked.buffers()[1]
+    assert np.frombuffer(memoryview(offsets), dtype=np.int32)[:3].tolist() == [0, 3, 5], \
+        "the null slot must carry its dead bytes, or this does not test `live`"
     _, data = arrow_array_adapter(masked)
     assert data.tolist() == ["", "ok"]
 
@@ -462,3 +472,77 @@ if __name__ == "__main__":
     test_create_str_array_all_null_bitmap_is_a_copy()
     test_structured_array_adapter()
     test_uniform_arrow_array_adapter_1()
+
+
+def test_a_list_row_of_a_different_length_is_refused():
+    # The result is the flattened elements with no offsets, so element i only
+    # maps back to a row when every row is the same length. An empty row and a
+    # ragged row break that exactly as a null row does, and used to be answered
+    # with silently misaligned data: three rows came back as two elements.
+    ty = pa.list_(pa.struct([("v", pa.int64())]))
+    for rows in (
+        [[{"v": 1}], [], [{"v": 3}]],
+        [[{"v": 1}, {"v": 2}], [{"v": 3}]],
+        [[{"v": 1}], [{"v": 2}, {"v": 3}, {"v": 4}]],
+    ):
+        with pytest.raises(NotImplementedError, match="not all the same length"):
+            arrow_array_adapter(pa.array(rows, type=ty))
+    # Uniform rows of width > 1 stay supported: 2 rows of 2 is well defined.
+    _, _, datas = arrow_array_adapter(
+        pa.array([[{"v": 1}, {"v": 2}], [{"v": 3}, {"v": 4}]], type=ty))
+    assert datas["v"].tolist() == [1, 2, 3, 4]
+
+
+def test_a_struct_level_null_hides_its_child_value_from_the_string_adapter():
+    # A row null at the struct layer leaves its child's own bitmap untouched, so
+    # the string adapter used to treat the hidden bytes as a live value: it
+    # refused the batch over a trailing NUL no caller can observe, and sized the
+    # column's width from a value no caller can observe.
+    ty = pa.struct([("s", pa.string())])
+    hidden_nul = pa.StructArray.from_arrays(
+        [pa.array(["ok", "bad\x00", "fine"], type=pa.string())], ["s"],
+        mask=pa.array([False, True, False]))
+    assert hidden_nul.to_pylist() == [{"s": "ok"}, None, {"s": "fine"}]
+    _, _, datas = arrow_array_adapter(hidden_nul)
+    assert datas["s"].tolist() == ["ok", "", "fine"]
+
+    hidden_wide = pa.StructArray.from_arrays(
+        [pa.array(["ab", "X" * 200, "cd"], type=pa.string())], ["s"],
+        mask=pa.array([False, True, False]))
+    _, _, datas = arrow_array_adapter(hidden_wide)
+    assert datas["s"].dtype == np.dtype("<U2"), (
+        "width must come from observable values, not from one hidden under a "
+        "struct-level null")
+    # The two validity layers stay separate: this function reports the field's
+    # own bitmap and the struct's, and is_null_struct takes both.
+    struct_bitmap, bitmaps, _ = arrow_array_adapter(hidden_wide)
+    assert struct_bitmap is not None
+    assert bitmaps["s"] is None, "the field itself has no nulls of its own"
+    assert isinstance(pa.array([{"s": "x"}], type=ty), pa.StructArray)
+
+
+def test_an_empty_element_never_indexes_the_neighbour_s_dead_bytes():
+    # `non_empty` keeps an empty element out of the trailing-NUL scan. Without
+    # it, or with `>=` instead of `>`, the empty element's last byte index walks
+    # backwards into the previous element, or to -1 which numpy wraps to the end
+    # of the span, and the guard fires on an empty string.
+    masked = pc.if_else(pa.array([True, False]),
+                        pa.array(["", "ab\x00"], type=pa.string()),
+                        pa.scalar(None, pa.string()))
+    assert masked.to_pylist() == ["", None]
+    offsets = np.frombuffer(memoryview(masked.buffers()[1]), dtype=np.int32)[:3]
+    assert offsets.tolist() == [0, 0, 3], "the dead bytes must be present to test this"
+    _, data = arrow_array_adapter(masked)
+    assert data.tolist() == ["", ""]
+
+
+def test_a_live_empty_element_is_not_judged_by_the_span_s_first_byte():
+    # `last_byte` is 0 for an empty element, so without the `non_empty` term in
+    # the trailing-NUL scan an empty value is judged by the FIRST byte of the
+    # span. When the column's first value begins with a NUL, that byte is 0 and
+    # every live empty string in the column is refused.
+    arr = pa.array(["\x00x", ""], type=pa.string())
+    bounds = np.frombuffer(memoryview(arr.buffers()[2]), dtype=np.uint8)
+    assert bounds[0] == 0, "this test needs the span to start with a NUL byte"
+    _, data = arrow_array_adapter(arr)
+    assert data.tolist() == ["\x00x", ""]

@@ -37,4 +37,6 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
-html_baseurl = "https://goykhman.github.io/numbarrow"
+# The trailing slash matters: sphinx-sitemap concatenates, so without it
+# every emitted URL reads ".../numbarrowen/index.html".
+html_baseurl = "https://goykhman.github.io/numbarrow/"

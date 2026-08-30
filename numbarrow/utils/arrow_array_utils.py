@@ -197,10 +197,25 @@ def structured_array_adapter(struct_array: pa.StructArray) -> tuple[
         )
     bitmaps = {}
     datas = {}
+    # `field()` hands back the raw child, which keeps its own validity bits and
+    # knows nothing about a row that is null at the struct layer. Adapting that
+    # child treats such a row's bytes as a live value: it sizes a string
+    # column's width from a value no caller can observe, decodes those bytes
+    # and so raises UnicodeDecodeError on non-utf8 ones, and trips the
+    # trailing-NUL refusal over a value the caller already nulled out.
+    # `flatten()` applies the struct's validity to each child, which supplies
+    # exactly that missing layer, so the DATA is read from the flattened child.
+    # The reported bitmap still comes from the child's own buffer: this
+    # function returns the two validity layers separately, on purpose, and
+    # `is_null_struct` takes both, so folding the struct layer into the field
+    # bitmap here would collapse a distinction the caller needs.
+    raw_children = [struct_array.field(i) for i in range(len(data_type))]
+    masked = list(struct_array.flatten()) if struct_array.null_count else raw_children
     for field_ind in range(len(data_type)):
         field: pa.Field = data_type[field_ind]
         field_name = field.name
-        pa_array = struct_array.field(field_ind)
+        raw_child = raw_children[field_ind]
+        pa_array = masked[field_ind]
         # Each child goes through the dispatcher rather than straight to
         # uniform_arrow_array_adapter. A boolean child is bit-packed, so the
         # uniform viewer would read it at one byte per element over a buffer
@@ -215,6 +230,11 @@ def structured_array_adapter(struct_array: pa.StructArray) -> tuple[
                 f"a single field's bitmap and data"
             )
         bitmap, data = adapted
+        if struct_array.null_count:
+            # Recomputed from the raw child so the reported bitmap stays this
+            # field's own validity, matching what every adapter derives from
+            # buffers()[0] for an unmasked child.
+            bitmap = create_bitmap(raw_child.buffers()[0], raw_child.offset, len(raw_child))
         bitmaps[field_name] = bitmap
         datas[field_name] = data
     return struct_bitmap, bitmaps, datas
@@ -237,8 +257,11 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
 
     Whether a field's data is copied depends on the field's type. A
     fixed-width child is a zero-copy view over the contiguous
-    `pa.StructArray` values; a boolean child is bit-unpacked and a string
-    child is repacked into fixed-width Unicode, so both of those are copies.
+    `pa.StructArray` values, except a `date32` child, whose int32 days are cast
+    up to `datetime64[D]` and so allocate; `date64` and `timestamp` children
+    are views, since their int64 values need no cast. A boolean child is
+    bit-unpacked and a string child is repacked into fixed-width Unicode, so
+    those are copies too.
     Every returned data array is read-only either way.
 
     The returned arrays are the flattened elements of every list in
@@ -259,12 +282,13 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
             f"Not implemented for a list array of {len(list_array)} rows of "
             f"type {list_array.type}: elements are {values.type}, not a struct"
         )
-    # A null outer row holds no elements, so the flattened result is shorter
-    # than the row count and every element after the null belongs to a
-    # different row than its index says. The returned shape carries no offsets
-    # and so cannot express that, and the struct-level fold covers the elements
-    # rather than the rows, so the null is not reported anywhere either.
-    # Refused rather than answered wrongly.
+    # The result is the flattened elements with no offsets, so a caller can
+    # only map element i back to a row by assuming every row holds the same
+    # number of elements. Three shapes break that assumption identically, by
+    # shifting every element after them: a null row, an empty row and a row of
+    # a different length. The struct-level fold covers the elements rather than
+    # the rows, so none of it is reported anywhere either. Refused rather than
+    # answered wrongly.
     if list_array.null_count:
         raise NotImplementedError(
             f"Not implemented for a list array of {len(list_array)} rows of type "
@@ -272,6 +296,18 @@ def structured_list_array_adapter(list_array: pa.ListArray) -> tuple[
             f"row contributes no elements, so the flattened result would "
             f"silently misalign with the rows"
         )
+    if len(list_array):
+        bounds = list_array.offsets.to_numpy(zero_copy_only=False).astype(np.int64)
+        widths = bounds[1:] - bounds[:-1]
+        low, high = int(widths.min()), int(widths.max())
+        if low != high:
+            raise NotImplementedError(
+                f"Not implemented for a list array of {len(list_array)} rows of type "
+                f"{list_array.type} whose rows are not all the same length: they run "
+                f"from {low} to {high}. Element order alone cannot say which row an "
+                f"element belongs to unless every row is the same length, so the "
+                f"result would silently misalign with the rows"
+            )
     # `values` is the whole child array and ignores this array's own offset,
     # so a sliced or offset list column would hand back the elements of rows
     # it does not contain. The offsets are absolute into `values`, so the

@@ -15,6 +15,22 @@ from typing import Callable
 from numbarrow.core.adapters import arrow_array_adapter
 
 
+def _to_arrow(output):
+    """Convert one UDF output column to an Arrow array.
+
+    A numpy fixed-width unicode array handed straight to ``pa.array`` is read
+    with C string semantics, so a value is cut at its first NUL: ``"a\x00b"``
+    arrives as ``"a"`` and a leading NUL empties the value outright. Going via
+    ``tolist()`` hands Arrow real Python strings, which carry NULs, at about
+    18% more time on a 200k-row column and only for unicode columns. A
+    trailing NUL is already gone before this point, dropped by numpy when the
+    array was built, which matches the adapter refusing one on the way in.
+    """
+    if getattr(output, "dtype", None) is not None and output.dtype.kind == "U":
+        return pa.array(output.tolist())
+    return pa.array(output)
+
+
 def _fold_struct_validity(struct_bitmap, field_bitmap):
     """Combine a struct's own validity bits into one field's bits.
 
@@ -143,5 +159,5 @@ def make_mapinarrow_func(
                 _claim_keys(data_dict, data_owners, col_datas, col, "data")
                 _claim_keys(bitmap_dict, bitmap_owners, col_bitmaps, col, "bitmap")
             outputs = main_func(data_dict, bitmap_dict, broadcasts)
-            yield pa.RecordBatch.from_pydict({col: pa.array(output) for col, output in outputs.items()})
+            yield pa.RecordBatch.from_pydict({col: _to_arrow(output) for col, output in outputs.items()})
     return _
