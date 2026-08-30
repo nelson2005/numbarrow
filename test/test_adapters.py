@@ -1,5 +1,6 @@
 import numpy as np
 import pyarrow as pa
+import pytest
 
 from datetime import date, datetime
 from dateutil import tz
@@ -68,6 +69,73 @@ def test_large_str_array():
     bitmap, data = arrow_array_adapter(pa.array(["large", "string"], type=pa.large_string()))
     assert bitmap is None
     assert data.dtype == np.dtype("|U6") and len(data) == 2
+
+
+def test_bool_struct_child_every_bit_pattern():
+    # A boolean child is bit-packed. Read at one byte per element it spans
+    # eight times its own buffer, so the values are wrong and the read runs
+    # past the end. Every pattern up to twelve elements is checked because the
+    # all-False-after-index-0 patterns happen to survive the wrong stride.
+    for n in range(1, 13):
+        for pattern in range(1 << n):
+            vals = [bool((pattern >> i) & 1) for i in range(n)]
+            arr = pa.array([{"f": v} for v in vals], type=pa.struct([("f", pa.bool_())]))
+            _, _, datas = arrow_array_adapter(arr)
+            assert datas["f"].tolist() == vals, (n, pattern)
+
+
+def test_bool_struct_child_matches_the_standalone_child():
+    vals = [True, False, True, True, False, False, True, False, True]
+    arr = pa.array([{"f": v} for v in vals], type=pa.struct([("f", pa.bool_())]))
+    _, _, datas = arrow_array_adapter(arr)
+    _, standalone = arrow_array_adapter(arr.field("f"))
+    assert datas["f"].tolist() == standalone.tolist() == vals
+
+
+def test_multi_buffer_struct_children_adapt_or_raise_a_typed_error():
+    # Every child type whose Arrow layout uses more than two buffers. Each must
+    # either adapt or name itself in the error; "too many values to unpack"
+    # names neither the field nor the type.
+    adapts = {"string": pa.string(), "large_string": pa.large_string()}
+    refuses = {
+        "binary": pa.binary(), "large_binary": pa.large_binary(),
+        "nested_struct": pa.struct([("x", pa.int64())]),
+        "list": pa.list_(pa.int64()), "large_list": pa.large_list(pa.int64()),
+        "fixed_size_list": pa.list_(pa.int64(), 2),
+        "map": pa.map_(pa.string(), pa.int64()),
+    }
+    for child_ty in adapts.values():
+        arr = pa.array([None], type=pa.struct([("f", child_ty)]))
+        _, bitmaps, datas = arrow_array_adapter(arr)
+        assert "f" in datas and "f" in bitmaps
+    for name, child_ty in refuses.items():
+        arr = pa.array([None], type=pa.struct([("f", child_ty)]))
+        with pytest.raises(NotImplementedError) as excinfo:
+            arrow_array_adapter(arr)
+        # Not `"f" in message`: the letter f appears in almost any message.
+        # Asserted without a disjunction on the field name: every message form
+        # here carries the type, and `or "'f'" in ...` let the type be dropped
+        # from the struct-field message with the suite staying green.
+        assert str(child_ty) in str(excinfo.value), name
+
+
+def test_struct_with_a_string_field():
+    # The shape PySpark produces for struct<name: string, id: bigint>.
+    arr = pa.array([{"name": "a", "id": 1}, {"name": "bb", "id": 2}],
+                   type=pa.struct([("name", pa.string()), ("id", pa.int64())]))
+    _, _, datas = arrow_array_adapter(arr)
+    assert list(datas["name"]) == ["a", "bb"]
+    assert datas["id"].tolist() == [1, 2]
+
+
+def test_uint8_column_and_struct_child():
+    arr = pa.array([3, 250, None], type=pa.uint8())
+    bitmap, data = arrow_array_adapter(arr)
+    assert data.tolist() == [3, 250, 0] or data[:2].tolist() == [3, 250]
+    assert not is_null(0, bitmap) and is_null(2, bitmap)
+    struct_arr = pa.array([{"f": 3}, {"f": 250}], type=pa.struct([("f", pa.uint8())]))
+    _, _, datas = arrow_array_adapter(struct_arr)
+    assert datas["f"].tolist() == [3, 250]
 
 
 if __name__ == "__main__":

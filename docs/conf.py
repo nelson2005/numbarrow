@@ -37,4 +37,13 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
-html_baseurl = "https://goykhman.github.io/numbarrow"
+# The trailing slash matters: sphinx-sitemap concatenates, so without it
+# every emitted URL reads ".../numbarrowen/index.html".
+html_baseurl = "https://goykhman.github.io/numbarrow/"
+# The default scheme is "{lang}{version}{link}", which injects an "en/" segment
+# for a directory the build never emits: the HTML is written flat and docs.yml
+# publishes it verbatim, so every sitemap URL 404s. Sphinx's own canonical link
+# is built from html_baseurl alone and is correct, so without this the two
+# artifacts of one build disagree. sphinx-sitemap logs an info line rather than
+# a warning, so `sphinx-build -W` does not catch it.
+sitemap_url_scheme = "{link}"

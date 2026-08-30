@@ -33,7 +33,10 @@ def cast_64bit_date_arrow_to_numpy_array(pa_array: pa.Array, np_dtype: np.dtype)
     The associated bitmap (if any) is also returned.
     """
     int64_array = pa_array.cast(pa.int64())
-    assert int64_array.buffers()[1].address == pa_array.buffers()[1].address, "got copied"
+    # A zero-length array's buffers are not required to survive a cast, and
+    # nothing has been copied when there is nothing to copy.
+    if len(pa_array):
+        assert int64_array.buffers()[1].address == pa_array.buffers()[1].address, "got copied"
     bitmap, int64_data = uniform_arrow_array_adapter(int64_array)
     data = int64_data.view(np_dtype)
     assert data.ctypes.data == int64_data.ctypes.data, "got copied"
@@ -43,7 +46,19 @@ def cast_64bit_date_arrow_to_numpy_array(pa_array: pa.Array, np_dtype: np.dtype)
 @singledispatch
 def arrow_array_adapter(pa_array: pa.Array):
     """ Dispatcher for PyArrow array adapters of various types. """
-    raise NotImplementedError(f"Not implemented for {pa_array} of type {type(pa_array)} and elements {pa_array.type}")
+    # The array itself is deliberately not interpolated: its repr carries every
+    # value it holds, which grows without bound and puts the caller's data into
+    # whatever log catches the traceback.
+    # Being the base implementation, this also receives anything that is not a
+    # registered Array. A pa.Scalar or a pa.Field has a type but no length, so
+    # the count is read defensively: calling len() on one turns the documented
+    # NotImplementedError into a TypeError raised while building the message,
+    # which escapes any caller that wraps this in `except NotImplementedError`.
+    if hasattr(pa_array, "__len__"):
+        described = f"an array of {len(pa_array)} elements of type {pa_array.type}"
+    else:
+        described = f"{type(pa_array).__name__} of type {pa_array.type}"
+    raise NotImplementedError(f"Not implemented for {described}")
 
 
 @arrow_array_adapter.register(pa.BooleanArray)
@@ -54,15 +69,30 @@ def _(pa_array: pa.BooleanArray):
      when casting to numpy arrays of booleans.
     """
     bitmap_buf, data_buf = pa_array.buffers()
-    data_buf_p = data_buf.address
     num_of_bool_elements = len(pa_array)
+    if num_of_bool_elements == 0:
+        # The Arrow spec lets a zero-length array carry a null data buffer, and
+        # pyarrow's own full validation accepts one, so there is nothing to
+        # unpack. Answered the same way as the 0-byte-buffer array it is
+        # logically identical to, rather than refused.
+        data = np.empty((0,), dtype=np.bool_)
+        data.flags.writeable = False
+        return create_bitmap(bitmap_buf, pa_array.offset, 0), data
+    if data_buf is None:
+        # Unreachable through pyarrow, which refuses to build a non-empty array
+        # with a null data buffer, but a foreign producer can hand one over the
+        # C Data Interface. A typed error beats dereferencing None.
+        raise ValueError(f"bool array of length {num_of_bool_elements} has no data buffer")
+    data_buf_p = data_buf.address
     total_bits = pa_array.offset + num_of_bool_elements
     num_of_bytes = (total_bits + 7) // 8
     packed_boolean_data_viewer = arrays_viewers[np.uint8]
     packed_boolean_data = packed_boolean_data_viewer(data_buf_p, num_of_bytes)
     data = unpack_booleans(pa_array.offset, num_of_bool_elements, packed_boolean_data)
     bitmap = create_bitmap(bitmap_buf, pa_array.offset, len(pa_array))
-    bitmap = bitmap.copy() if bitmap is not None else None
+    # A fresh allocation, but read-only all the same: the contract must not
+    # depend on which Arrow type the caller happened to pass.
+    data.flags.writeable = False
     return bitmap, data
 
 
@@ -74,11 +104,15 @@ def _(pa_array: pa.Date32Array):
     creates a copy when it re-interprets numpy array of int32 integers
      (number of days since 1970-01-01) as datetime64[D] (int64)"""
     int32_array = pa_array.cast(pa.int32())
-    assert int32_array.buffers()[1].address == pa_array.buffers()[1].address, "got copied"
+    # A zero-length array's buffers are not required to survive a cast, and
+    # numpy may hand back the same empty allocation twice.
+    if len(pa_array):
+        assert int32_array.buffers()[1].address == pa_array.buffers()[1].address, "got copied"
     bitmap, int32_data = uniform_arrow_array_adapter(int32_array)
     data = int32_data.astype(np.dtype("datetime64[D]"))
-    assert int32_data.ctypes.data != data.ctypes.data
-    bitmap = bitmap.copy() if bitmap is not None else None
+    if len(pa_array):
+        assert int32_data.ctypes.data != data.ctypes.data
+    data.flags.writeable = False
     return bitmap, data
 
 
@@ -90,7 +124,8 @@ def _(pa_array: pa.Date64Array):
 @arrow_array_adapter.register(pa.lib.DoubleArray)
 @arrow_array_adapter.register(pa.Int32Array)
 @arrow_array_adapter.register(pa.Int64Array)
-def _(pa_array: pa.lib.DoubleArray | pa.Int32Array | pa.Int64Array):
+@arrow_array_adapter.register(pa.UInt8Array)
+def _(pa_array: pa.lib.DoubleArray | pa.Int32Array | pa.Int64Array | pa.UInt8Array):
     return uniform_arrow_array_adapter(pa_array)
 
 
