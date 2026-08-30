@@ -546,3 +546,17 @@ def test_a_live_empty_element_is_not_judged_by_the_span_s_first_byte():
     assert bounds[0] == 0, "this test needs the span to start with a NUL byte"
     _, data = arrow_array_adapter(arr)
     assert data.tolist() == ["\x00x", ""]
+
+
+def test_a_ragged_map_raises_as_the_readme_says():
+    # A MapArray is a ListArray, so the same-length contract binds it too. The
+    # README documents this explicitly because a ragged map is the usual shape
+    # and it used to be answered with entries no row could claim.
+    ragged = pa.array([[("a", 1), ("b", 2)], [("c", 3)]],
+                      type=pa.map_(pa.string(), pa.int64()))
+    with pytest.raises(NotImplementedError, match="not all the same length"):
+        arrow_array_adapter(ragged)
+    uniform = pa.array([[("a", 1), ("b", 2)], [("c", 3), ("d", 4)]],
+                       type=pa.map_(pa.string(), pa.int64()))
+    _, _, datas = arrow_array_adapter(uniform)
+    assert datas["value"].tolist() == [1, 2, 3, 4]

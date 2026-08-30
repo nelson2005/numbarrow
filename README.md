@@ -59,7 +59,11 @@ result = sum_non_null(data, bitmap)  # 80
 Every other array type raises `NotImplementedError` naming the type, including a
 `ListArray` whose elements are not structs and a struct with repeated field
 names. A `MapArray` is a `ListArray` whose values are a key/value struct, so it
-adapts to those two fields rather than raising.
+adapts to those two fields rather than raising, but only when every row holds
+the same number of entries. A map whose rows differ in length, which is the
+usual shape, raises for the same reason a ragged list does: the result is the
+flattened entries with no offsets, so nothing can say which row an entry
+belongs to.
 
 A `ListArray` of structs flattens its elements and returns no offsets, so a null
 outer row can be neither reported nor accounted for in the element-to-row
