@@ -113,7 +113,10 @@ def test_multi_buffer_struct_children_adapt_or_raise_a_typed_error():
         with pytest.raises(NotImplementedError) as excinfo:
             arrow_array_adapter(arr)
         # Not `"f" in message`: the letter f appears in almost any message.
-        assert str(child_ty) in str(excinfo.value) or "'f'" in str(excinfo.value), name
+        # Asserted without a disjunction on the field name: every message form
+        # here carries the type, and `or "'f'" in ...` let the type be dropped
+        # from the struct-field message with the suite staying green.
+        assert str(child_ty) in str(excinfo.value), name
 
 
 def test_struct_with_a_string_field():

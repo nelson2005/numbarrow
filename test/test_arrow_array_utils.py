@@ -2,6 +2,7 @@ import gc
 import random
 import subprocess
 import sys
+from decimal import Decimal
 
 import numpy as np
 import pyarrow as pa
@@ -9,7 +10,7 @@ import pyarrow.compute as pc
 import pytest
 from numbarrow.core.adapters import arrow_array_adapter
 from numbarrow.utils.arrow_array_utils import (
-    create_str_array, structured_array_adapter,
+    create_bitmap, create_str_array, structured_array_adapter,
     uniform_arrow_array_adapter
 )
 from numbarrow.core.is_null import is_null
@@ -160,10 +161,14 @@ def test_sliced_list_sees_the_slice_null_count_not_the_parent_s():
 def test_a_trailing_nul_is_refused_rather_than_truncated():
     # numpy pads a short |U element with NUL, so a trailing NUL in the value is
     # indistinguishable from that padding: "ab\x00" used to come back as "ab".
-    for values in (["ab\x00", "abc"], ["ab\x00\x00"], ["ok", "x\x00"]):
-        with pytest.raises(ValueError, match="ends in a NUL"):
+    # The element index is asserted, not just the phrase: a wide batch is
+    # unusable if the message points at the wrong element, and matching only on
+    # "ends in a NUL" leaves a hard-coded index undetected.
+    for values, index_ in ((["ab\x00", "abc"], 0), (["ab\x00\x00"], 0), (["ok", "x\x00"], 1)):
+        pattern = rf"element {index_} of a {len(values)}-element string array"
+        with pytest.raises(ValueError, match=pattern):
             arrow_array_adapter(pa.array(values, type=pa.string()))
-        with pytest.raises(ValueError, match="ends in a NUL"):
+        with pytest.raises(ValueError, match=pattern):
             arrow_array_adapter(pa.array(values, type=pa.large_string()))
     # Leading and interior NULs are representable and stay supported.
     _, data = arrow_array_adapter(pa.array(["a\x00b", "\x00ab", "abc"], type=pa.string()))
@@ -371,7 +376,20 @@ def test_unsupported_type_errors_name_the_type_without_the_data():
         arrow_array_adapter(pa.array(["abcdef"] * 500, type=pa.binary()))
     message = str(excinfo.value)
     assert "binary" in message
-    assert "abcdef" not in message
+    assert len(message) < 200
+
+    # `"abcdef" not in message` cannot fail on a binary array: pyarrow renders
+    # its elements as hex, so the interpolating message did not contain it
+    # either, which left `len(message) < 200` doing all the work. A length
+    # bound is not a content bound: at three elements the interpolating message
+    # was 132 chars and passed every assertion above. decimal128 renders
+    # human-readably, so it discriminates at any size.
+    with pytest.raises(NotImplementedError) as excinfo:
+        arrow_array_adapter(
+            pa.array([Decimal("1234567890.12")] * 3, type=pa.decimal128(20, 2)))
+    message = str(excinfo.value)
+    assert "decimal128" in message
+    assert "1234567890.12" not in message
     assert len(message) < 200
 
 
@@ -393,12 +411,43 @@ def test_width_ignores_a_wide_value_under_a_null_slot():
     assert data.dtype == np.dtype("<U2")
 
 
-def test_a_null_data_buffer_names_the_type():
-    for arr in (pa.Array.from_buffers(pa.int64(), 0, [None, None]),
-                pa.Array.from_buffers(pa.bool_(), 0, [None, None])):
-        arr.validate(full=True)
-        with pytest.raises(ValueError, match="no data buffer"):
-            arrow_array_adapter(arr)
+def test_a_zero_length_array_with_null_buffers_adapts_like_its_empty_twin():
+    # The Arrow spec lets a zero-length array carry null buffers and pyarrow's
+    # own full validation accepts one, so it is the same logical array as the
+    # one with 0-byte buffers and has to get the same answer. pyarrow refuses
+    # to build the non-empty version of this shape, so length 0 is the only way
+    # a null data buffer can reach an adapter at all.
+    cases = [
+        (pa.Array.from_buffers(pa.int64(), 0, [None, None]),
+         pa.array([], type=pa.int64())),
+        (pa.Array.from_buffers(pa.bool_(), 0, [None, None]),
+         pa.array([], type=pa.bool_())),
+        (pa.Array.from_buffers(pa.string(), 0, [None, None, pa.py_buffer(b"")]),
+         pa.array([], type=pa.string())),
+        (pa.Array.from_buffers(pa.large_string(), 0, [None, None, pa.py_buffer(b"")]),
+         pa.array([], type=pa.large_string())),
+    ]
+    for null_buffered, empty_buffered in cases:
+        null_buffered.validate(full=True)
+        bitmap, data = arrow_array_adapter(null_buffered)
+        want_bitmap, want_data = arrow_array_adapter(empty_buffered)
+        assert bitmap is want_bitmap is None, null_buffered.type
+        assert data.dtype == want_data.dtype, null_buffered.type
+        assert len(data) == 0, null_buffered.type
+        # Read-only on this path too, so the contract does not depend on
+        # whether the batch happened to be empty.
+        assert not data.flags.writeable, null_buffered.type
+
+
+def test_a_non_array_reaching_the_dispatcher_still_raises_not_implemented():
+    # The fallback is the base singledispatch implementation, so it receives
+    # anything that is not a registered Array. A pa.Scalar and a pa.Field have
+    # a type but no length; building the message with len() turned the
+    # documented NotImplementedError into a TypeError that escaped any caller
+    # wrapping this in `except NotImplementedError`.
+    for obj in (pa.scalar(5, pa.int64()), pa.field("f", pa.int64())):
+        with pytest.raises(NotImplementedError, match="int64"):
+            arrow_array_adapter(obj)
 
 
 def test_repeated_struct_field_names_raise_a_typed_error():
@@ -416,6 +465,61 @@ def test_boolean_offset_crossing_a_byte_boundary():
     for offset in (1, 7, 8, 9, 15):
         _, data = arrow_array_adapter(arr.slice(offset))
         assert data.tolist() == values[offset:], offset
+
+
+def test_the_boolean_view_covers_the_offset_as_well_as_the_length(monkeypatch):
+    # The values alone cannot catch an undersized view: unpack_booleans is
+    # @njit with an explicit signature, so numba does not bounds-check it and
+    # the read runs off the end of the view into the still-valid pyarrow buffer,
+    # returning the right answer. Sizing the view from the length alone, which
+    # ignores the offset, therefore leaves every value assertion green. So the
+    # size the adapter asks for is recorded and checked directly.
+    from numbarrow.core import adapters
+
+    sizes = []
+    real_viewer = adapters.arrays_viewers[np.uint8]
+
+    def spy(pointer, size):
+        sizes.append(size)
+        return real_viewer(pointer, size)
+
+    monkeypatch.setitem(adapters.arrays_viewers, np.uint8, spy)
+    values = [bool((i * 7) % 3) for i in range(20)]
+    arr = pa.array(values, type=pa.bool_())
+    for offset in (1, 7, 8, 9, 15):
+        sizes.clear()
+        sliced = arr.slice(offset)
+        _, data = arrow_array_adapter(sliced)
+        assert data.tolist() == values[offset:], offset
+        # The bits sit at their absolute positions in the buffer, so the view
+        # has to reach the last one: ceil((offset + length) / 8).
+        want = (sliced.offset + len(sliced) + 7) // 8
+        assert sizes[0] == want, (offset, sizes[0], want)
+
+
+def test_a_zero_length_array_whose_offset_points_past_its_buffer_adapts():
+    # The shape the zero-length early return exists for. np.frombuffer would
+    # raise a bare "buffer is smaller than requested size (0)" naming neither
+    # the array nor the type; every other zero-length array in the suite has a
+    # buffer big enough for the read, so nothing else reaches the branch.
+    arr = pa.Array.from_buffers(pa.int64(), 0, [None, pa.py_buffer(b"")], offset=2)
+    arr.validate(full=True)
+    bitmap, data = arrow_array_adapter(arr)
+    assert bitmap is None
+    assert data.dtype == np.dtype("int64")
+    assert len(data) == 0
+    assert not data.flags.writeable
+
+
+def test_create_bitmap_owns_its_memory_on_the_offset_path():
+    # create_bitmap's docstring promises the result always owns its memory. The
+    # all-null test next to it uses an offset-0 array, so it pins only that
+    # path; a slice of the packbits array on the offset path keeps its parent
+    # alive and went unnoticed.
+    buf = pa.py_buffer(bytes([0xB5, 0x6C, 0xF0]))
+    bitmap = create_bitmap(buf, 3, 13)
+    assert bitmap.base is None
+    assert bitmap.flags.owndata
 
 
 def test_result_is_read_only_whatever_the_buffer_provenance():

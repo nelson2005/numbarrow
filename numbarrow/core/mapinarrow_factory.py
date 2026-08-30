@@ -84,6 +84,12 @@ def make_mapinarrow_func(
         ``dict[str, np.ndarray]`` that is used to create a PyArrow
         ``RecordBatch``.
 
+        Spark binds the columns of that batch to the declared output schema by
+        POSITION, not by name, and compares only their types.  The dict's
+        insertion order is therefore what decides, and returning two same-typed
+        columns in the other order swaps their values with no error.  Build the
+        returned dict in the order the output schema declares.
+
         ``data_dict`` maps a name to an array of data of a supported type.  A
         column of a uniform type contributes one entry under the column name;
         a structured column contributes one entry per field, under the field
@@ -144,9 +150,15 @@ def make_mapinarrow_func(
                         # A struct with no fields contributes no key at all, so
                         # a requested column would vanish from both dicts
                         # without a word.
+                        # The remedy is phrased for both paths: `requested`
+                        # falls back to every column in the batch, so a caller
+                        # who passed no `input_columns` has no list to drop it
+                        # from and needs the opposite advice.
                         raise ValueError(
                             f"column {col!r} of type {col_pa.type} has no fields, so it "
-                            f"contributes nothing to data_dict; drop it from input_columns"
+                            f"contributes nothing to data_dict; drop it from the projection "
+                            f"that feeds mapInArrow, or name the columns you need in "
+                            f"input_columns"
                         )
                     col_bitmaps = {
                         name: _fold_struct_validity(struct_bitmap, field_bitmap)

@@ -81,6 +81,14 @@ the caller does not own. Declare numba signatures that receive them with
 lazily typed and numba will infer it. Returned bitmaps own their memory and are
 writable.
 
+One exception to declaring a signature: a string column adapts to a fixed-width
+`|U` dtype whose width is the longest live value **in that batch**, so the numba
+type of a string argument varies from batch to batch. Spark splits a partition
+at `spark.sql.execution.arrow.maxRecordsPerBatch`, so a signature that names one
+width compiles on the first batch and raises `TypeError: No matching definition`
+on the next one that is wider. Leave string arguments lazily typed, at the cost
+of a fresh compilation whenever a new width appears.
+
 A uniform array adapts to a 2-tuple, `(bitmap, data)`, where `bitmap` is `None`
 when the array has no validity buffer. A struct or list-of-struct array adapts
 to a 3-tuple: the struct-level bitmap, then two dicts keyed by field name. The

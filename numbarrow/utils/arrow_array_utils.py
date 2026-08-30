@@ -81,20 +81,34 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
     truncated. Leading and interior NULs are representable and are preserved.
     """
     bitmap_buf, offsets_buf, data_buf = pa_str_array.buffers()
+    offset = pa_str_array.offset
+    n = len(pa_str_array)
+    if n == 0:
+        # Decided before the buffers are touched: the Arrow spec lets a
+        # zero-length array carry null buffers, and pyarrow's own full
+        # validation accepts one, so there is nothing to read here and nothing
+        # that needs reading. Read-only like the non-empty path below, so that
+        # the contract does not depend on whether the batch happened to be
+        # empty.
+        empty = np.empty((0,), dtype="|U1")
+        empty.flags.writeable = False
+        return create_bitmap(bitmap_buf, offset, 0), empty
+    if offsets_buf is None or data_buf is None:
+        # The uniform and boolean adapters name the type for a missing buffer;
+        # without the same guard here the array dies on a bare AttributeError
+        # naming neither the array nor its type. Unreachable through pyarrow,
+        # which refuses to build a non-empty string array with null offsets,
+        # but a foreign producer can hand one over the C Data Interface.
+        missing = "offsets" if offsets_buf is None else "data"
+        raise ValueError(
+            f"{pa_str_array.type} array of length {n} has no {missing} buffer"
+        )
     data_p = data_buf.address
     offsets_p = offsets_buf.address
     offset_dtype = np.int64 if pa.types.is_large_string(pa_str_array.type) else np.int32
     offsets_len = offsets_buf.size // np.dtype(offset_dtype).itemsize
     offsets_array = arrays_viewers[offset_dtype](offsets_p, offsets_len)
-    offset = pa_str_array.offset
-    n = len(pa_str_array)
     logical_offsets = offsets_array[offset:offset + n + 1]
-    if n == 0:
-        # Read-only like the non-empty path below, so that the contract does
-        # not depend on whether the batch happened to be empty.
-        empty = np.empty((0,), dtype="|U1")
-        empty.flags.writeable = False
-        return create_bitmap(bitmap_buf, pa_str_array.offset, 0), empty
     bounds = np.asarray(logical_offsets, dtype=np.int64)
     # A null slot's offsets are not required to be empty: pc.if_else leaves the
     # masked-out value's bytes in place. Those bytes belong to no logical value,
@@ -346,19 +360,27 @@ def uniform_arrow_array_adapter(pa_array: pa.Array) -> tuple[np.ndarray | None, 
             f"`arrow_array_utils.arrow_to_numpy_dtypes`. Add it?"
         )
     bitmap_buf, data_buf = pa_array.buffers()
-    if data_buf is None:
-        raise ValueError(f"{data_arrow_ty} array of length {len(pa_array)} has no data buffer")
     data_item_byte_size = np.dtype(data_np_ty).itemsize
     data_len = len(pa_array)
     if data_len == 0:
         # An empty array's offset may still point past the end of an empty
         # buffer, where np.frombuffer raises a bare "buffer is smaller than
-        # requested size" naming neither the array nor the type.
+        # requested size" naming neither the array nor the type. The spec also
+        # lets a zero-length array carry a null data buffer, and pyarrow's own
+        # full validation accepts one, so this answers that shape the same way
+        # as the 0-byte-buffer array it is logically identical to.
+        # `structured_list_array_adapter` reasons the same way about the same
+        # shape; deciding it here keeps the two paths agreeing.
         empty = np.empty((0,), dtype=data_np_ty)
         # Read-only like the non-empty path below, so that the contract does
         # not depend on whether the batch happened to be empty.
         empty.flags.writeable = False
         return create_bitmap(bitmap_buf, pa_array.offset, 0), empty
+    if data_buf is None:
+        # Unreachable through pyarrow, which refuses to build a non-empty array
+        # with a null data buffer, but a foreign producer can hand one over the
+        # C Data Interface. A typed error beats dereferencing None.
+        raise ValueError(f"{data_arrow_ty} array of length {data_len} has no data buffer")
     # Viewed through the buffer rather than through its raw address, so that
     # the result's ``.base`` chain reaches the pyarrow buffer and keeps it
     # alive. A view built over a bare address owns nothing and refers to
