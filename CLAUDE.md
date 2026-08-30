@@ -30,11 +30,14 @@ numbarrow — Numba adapters for PyArrow and PySpark. Enables working with Arrow
 - Commit messages must not mention AI, Claude, Anthropic, or any AI tooling — only attribute to the user
 - Keep all memories in both MEMORY.md and the project CLAUDE.md (CLAUDE.md is in git and survives OS reinstalls)
 - Environment details go in MEMORY.md only (may change between OS installs)
-- Always exclude CLAUDE.md from upstream PRs (use a dedicated branch based on upstream/main)
+- Always exclude CLAUDE.md and the fork-only CI from upstream PRs (use a dedicated branch based on upstream/main)
 - Always use a feature branch — never commit directly to main
 - Never merge to main locally — only merge via PR on GitHub after all Actions pass
-- Never merge local feature branches into main — main must always match upstream/main (exception: CLAUDE.md)
-- Feature branches: base off origin/main (has CLAUDE.md); upstream PR branches: base off upstream/main (no CLAUDE.md)
+- Never merge local feature branches into main — main must always match upstream/main (exception: CLAUDE.md and the fork-only CI: `link-check.yml`, `doc-codeblock-flake8.yml`, `minimax_code_review.yml`, `.github/scripts/extract_codeblocks.py`, and the `numbarrow_ci.yml` matrix expansion)
+- No upstream-owned file may diverge on main except the fork-only CI above. A file upstream owns is fixed upstream, not patched here. Two cases that have bitten: fork CI flagging a code block in README, which is an upstream defect and belongs in an upstream PR rather than an edit here; and action version bumps or SHA pins in `docs.yml` and `numbarrow_release.yml`, which are hardening every consumer wants and belong upstream too
+- Feature branches: base off origin/main (has CLAUDE.md + fork CI); upstream PR branches: base off upstream/main (no CLAUDE.md, stock CI)
+- Do all coding work on the feature branch, then cherry-pick to the upstream PR branch when ready
+- An upstream PR branch that edits a file main also edits cannot be staged as a fork PR: the merge conflicts, so GitHub builds no merge ref and never runs CI. Leaving the fork CI untouched on that branch is what keeps the staging run possible
 - Always enable GitHub Actions on forked repos
 - Never assume a reviewer's comment is wrong — always verify claims against actual runtime before responding
 - Before posting PR comments, check for pending reviews with existing comments — never silently delete a pending review
