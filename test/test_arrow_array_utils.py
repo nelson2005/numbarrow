@@ -439,6 +439,43 @@ def test_a_zero_length_array_with_null_buffers_adapts_like_its_empty_twin():
         assert not data.flags.writeable, null_buffered.type
 
 
+def test_a_non_empty_all_null_array_carries_both_buffers_and_adapts():
+    # The complement of the zero-length case above. An all-null array is not a
+    # buffer-less one: pyarrow allocates the values buffer whatever the validity
+    # bitmap says, so a fully null column arrives with both buffers present and
+    # never reaches the missing-data-buffer guard. Sliced as well, where the
+    # values the adapter must skip sit before the start of the logical array.
+    cases = [
+        (pa.nulls(5, type=pa.int64()), np.dtype(np.int64)),
+        (pa.nulls(5, type=pa.float64()), np.dtype(np.float64)),
+        (pa.nulls(5, type=pa.bool_()), np.dtype(np.bool_)),
+        (pa.nulls(5, type=pa.int64())[1:4], np.dtype(np.int64)),
+        (pa.nulls(5, type=pa.bool_())[1:4], np.dtype(np.bool_)),
+    ]
+    for arr, want_dtype in cases:
+        assert arr.buffers()[1] is not None, arr.type
+        bitmap, data = arrow_array_adapter(arr)
+        assert bitmap is not None, arr.type
+        assert all(is_null(i, bitmap) for i in range(len(arr))), arr.type
+        assert data.dtype == want_dtype, arr.type
+        assert len(data) == len(arr), arr.type
+        # Only the shape is pinned. The bytes under a null slot belong to no
+        # logical value, so what they happen to hold is not part of the answer.
+        assert not data.flags.writeable, arr.type
+
+
+def test_pyarrow_refuses_a_non_empty_array_with_no_data_buffer():
+    # What keeps the missing-data-buffer branch out of reach of a pyarrow
+    # caller, asserted rather than assumed. The adapters keep the guard because
+    # a foreign producer can still hand that shape over the C Data Interface; if
+    # pyarrow ever starts building it, the branch becomes reachable from an
+    # ordinary array and turns from a typed error into a wrong refusal.
+    for ty in (pa.int64(), pa.bool_()):
+        validity = pa.nulls(5, type=ty).buffers()[0]
+        with pytest.raises(pa.ArrowInvalid, match="Missing values buffer"):
+            pa.Array.from_buffers(ty, 5, [validity, None])
+
+
 def test_a_non_array_reaching_the_dispatcher_still_raises_not_implemented():
     # The fallback is the base singledispatch implementation, so it receives
     # anything that is not a registered Array. A pa.Scalar and a pa.Field have
