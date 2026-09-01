@@ -123,6 +123,36 @@ def test_bitmap_survives_the_source_being_dropped():
     assert bitmap.tolist() == before.tolist()
 
 
+def test_the_offset_bitmap_owns_exactly_the_bytes_it_returns():
+    # The offset path returns np.packbits' output directly, which is only
+    # correct because the bits handed to it were padded to a whole number of
+    # bytes, so it already produces exactly (length + 7) // 8 of them and owns
+    # them. Changing the padding would silently return a longer bitmap.
+    for n in (9, 16, 17, 33, 64, 65, 129):
+        for offset in (1, 3, 7, 8):
+            if offset >= n:
+                continue
+            length = n - offset
+            source = pa.array([None if i % 3 == 0 else i for i in range(n)], type=pa.int64())
+            bitmap = create_bitmap(source.buffers()[0], offset, length)
+            assert len(bitmap) == (length + 7) // 8, (n, offset)
+            assert bitmap.base is None, (n, offset)
+
+
+def test_the_offset_bitmap_survives_the_source_being_dropped():
+    # Same guarantee as the offset-0 path, reached a different way: nothing
+    # Arrow-owned backs this one, so it holds without a copy.
+    source = pa.array([1, None, 3, 4, 5, None, 7, 8, 9, 10], type=pa.int64())
+    bitmap = create_bitmap(source.buffers()[0], 3, 6)
+    before = bitmap.tolist()
+    del source
+    gc.collect()
+    filler = [pa.array(list(range(64)), type=pa.int64()) for _ in range(200)]
+    after = bitmap.tolist()
+    del filler
+    assert after == before
+
+
 def test_sliced_list_returns_only_its_own_rows():
     rows = [[{"v": 10}, {"v": 11}], [{"v": 20}, {"v": 21}], [{"v": 30}, {"v": 31}]]
     ty = pa.list_(pa.struct([("v", pa.int64())]))

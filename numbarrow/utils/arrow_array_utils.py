@@ -35,12 +35,14 @@ def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0
     bit-map of valid array entries, adjusted for array offset.
 
     The returned array always owns its memory. The offset path below already
-    produced a fresh array through ``np.packbits``; the offset-0 path copies
-    so that ownership does not depend on a property the return value does not
-    carry. Without the copy an offset-0 bitmap aliases the Arrow validity
-    buffer, so writing to it nulls out the source, it reads as all-null once
-    the source is collected, and a short slice hands back bits the slice does
-    not own. """
+    produced a fresh array through ``np.packbits`` and is returned as-is; the
+    offset-0 path has to copy, because there it would otherwise be a view over
+    the Arrow validity buffer reached by raw address. That aliasing is not only
+    a hazard for a caller who writes: the bits change under a caller who only
+    reads, once the source array is collected and its buffer is reused, so a
+    bitmap that read 0b11011011 comes back all-zero and every row looks null.
+    Writing through it nulls out the source, and a short slice hands back bits
+    the slice does not own. """
     if bitmap_buf is None:
         return None
     bitmap_p = bitmap_buf.address
@@ -64,10 +66,11 @@ def create_bitmap(bitmap_buf: pa.Buffer | None, offset: int = 0, length: int = 0
     if pad:
         sliced_bits = np.pad(sliced_bits, (0, pad), mode="constant")
     result = np.packbits(sliced_bits, bitorder="little")
-    # Copied rather than sliced so that base is None on this path too: the
-    # docstring above promises ownership, and a slice of the packbits array
-    # keeps its parent alive instead.
-    return result[:num_bytes].copy()
+    # Returned as-is. sliced_bits was padded to a whole number of bytes just
+    # above, so packbits already produces exactly num_bytes of them, in a fresh
+    # array that owns them. Slicing to num_bytes trimmed nothing and only cost
+    # the copy that put base back to None.
+    return result
 
 
 def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tuple[np.ndarray | None, np.ndarray]:
