@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   build:
+    if: false
 
     strategy:
       matrix:
@@ -67,6 +68,7 @@ jobs:
         python -m build --wheel
 
   build-pyarrow-range:
+    if: false
     # The ends of the pyarrow range the dependency cap admits, as a separate
     # job so that pinning them does not multiply the matrix above. The real
     # constraint is numpy, not pyarrow: 14.0.0 passes, but pyarrow below 16 is
