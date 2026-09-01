@@ -18,9 +18,23 @@ def spark_unavailable_reason():
         runner = os.path.join(java_home, "bin", "java")
         if not os.access(runner, os.X_OK):
             return "JAVA_HOME is set but %s is not executable" % runner
-        return None
-    if shutil.which("java") is None:
+    elif shutil.which("java") is None:
         return "JAVA_HOME is unset and there is no java on PATH"
+    # The arrow path runs pyspark's own dependency checks, and those import
+    # distutils, which PEP 632 removed from the standard library in 3.12 and
+    # which only setuptools supplies there. Run the very checks the tests will
+    # hit rather than approximating them: a stand-in for the dependency can
+    # pass while the real check fails, which is exactly what a bare
+    # `import distutils` did.
+    try:
+        from pyspark.sql.pandas.utils import (
+            require_minimum_pandas_version,
+            require_minimum_pyarrow_version,
+        )
+        require_minimum_pandas_version()
+        require_minimum_pyarrow_version()
+    except Exception as exc:
+        return "pyspark cannot run its arrow path here: %s" % exc
     return None
 
 
