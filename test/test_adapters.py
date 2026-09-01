@@ -138,6 +138,19 @@ def test_uint8_column_and_struct_child():
     assert datas["f"].tolist() == [3, 250]
 
 
+def test_zero_length_date_and_timestamp():
+    for label, full in [
+        ("date32", pa.array([1, 2], type=pa.int32()).cast(pa.date32())),
+        ("date64", pa.array([86400000], type=pa.int64()).cast(pa.date64())),
+        ("timestamp", pa.array([1], type=pa.int64()).cast(pa.timestamp("ms"))),
+    ]:
+        empty = full.slice(0, 0)
+        _, data = arrow_array_adapter(empty)
+        assert len(data) == 0, label
+        _, _, datas = arrow_array_adapter(pa.StructArray.from_arrays([empty], ["f"]))
+        assert len(datas["f"]) == 0, label
+
+
 if __name__ == "__main__":
     test_arrow_array_adapter_1()
     test_arrow_array_adapter_2()
