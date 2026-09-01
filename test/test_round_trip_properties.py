@@ -9,6 +9,7 @@ either end, so they are asserted here rather than in the adapter tests.
 """
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from numbarrow.core.mapinarrow_factory import make_mapinarrow_func
 
@@ -66,6 +67,21 @@ def test_a_udf_names_its_output_columns():
 def test_a_string_column_keeps_its_width_across_the_round_trip():
     # The |U width is data-dependent, so a column whose widest value is under a
     # null must not size the output from a value no caller can see.
-    column = pa.array(["ab", None, "cd"], type=pa.string())
-    got = _round_trip(column).column("c")
+    #
+    # The null slot has to still hold that value's bytes for this to test
+    # anything: pa.array(["ab", None, "cd"]) leaves the offsets at [0, 2, 2, 4],
+    # so nothing is hidden under the null and any width passes. if_else against
+    # a null scalar keeps the wide value's bytes in place and only clears the
+    # validity bit.
+    values = pa.array(["ab", "x" * 40, "cd"], type=pa.string())
+    column = pc.if_else(pa.array([True, False, True]), values,
+                        pa.scalar(None, pa.string()))
+    seen = {}
+
+    def record_width(data_dict, bitmap_dict, broadcasts):
+        seen["dtype"] = data_dict["c"].dtype
+        return {name: value for name, value in data_dict.items()}
+
+    got = _round_trip(column, udf=record_width).column("c")
+    assert seen["dtype"] == np.dtype("<U2"), seen["dtype"]
     assert [v for v in got.to_pylist() if v] == ["ab", "cd"]

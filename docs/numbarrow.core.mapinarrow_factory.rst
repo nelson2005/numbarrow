@@ -23,6 +23,9 @@ Usage::
         result = ...
         return {"output_col": result}
 
+    udf = make_mapinarrow_func(my_func, broadcasts={"scale": 1.5})
+    df_out = df_in.mapInArrow(udf, output_schema)
+
 Every name in ``data_dict`` is also a key of ``bitmap_dict``, so a batch that
 happens to contain no nulls is indexable exactly like one that does.
 
@@ -34,10 +37,7 @@ nowhere and also shifts the element-to-row mapping, so a list column whose
 ``null_count`` is non-zero raises ``NotImplementedError``.
 
 A name may be claimed only once: a struct field sharing a name with another
-selected column raises ``ValueError`` rather than replacing it::
-
-    udf = make_mapinarrow_func(my_func, broadcasts={"scale": 1.5})
-    df_out = df_in.mapInArrow(udf, output_schema)
+selected column raises ``ValueError`` rather than replacing it.
 
 See ``test_mapinarrow_spark.py`` in the `test suite
 <https://github.com/Goykhman/numbarrow/tree/main/test>`_ for a complete runnable example.

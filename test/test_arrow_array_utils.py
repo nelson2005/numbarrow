@@ -485,6 +485,11 @@ def test_a_non_array_reaching_the_dispatcher_still_raises_not_implemented():
     for obj in (pa.scalar(5, pa.int64()), pa.field("f", pa.int64())):
         with pytest.raises(NotImplementedError, match="int64"):
             arrow_array_adapter(obj)
+    # The mirror case: an object that is not a pyarrow type at all has a length
+    # but no `type`, and reading it raised AttributeError past the same caller.
+    for obj in ([1, 2, 3], np.array([1, 2, 3]), "abc", None, 7):
+        with pytest.raises(NotImplementedError, match="not a pyarrow Array"):
+            arrow_array_adapter(obj)
 
 
 def test_repeated_struct_field_names_raise_a_typed_error():
