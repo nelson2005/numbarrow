@@ -50,14 +50,20 @@ def arrow_array_adapter(pa_array: pa.Array):
     # value it holds, which grows without bound and puts the caller's data into
     # whatever log catches the traceback.
     # Being the base implementation, this also receives anything that is not a
-    # registered Array. A pa.Scalar or a pa.Field has a type but no length, so
-    # the count is read defensively: calling len() on one turns the documented
-    # NotImplementedError into a TypeError raised while building the message,
-    # which escapes any caller that wraps this in `except NotImplementedError`.
-    if hasattr(pa_array, "__len__"):
-        described = f"an array of {len(pa_array)} elements of type {pa_array.type}"
+    # registered Array, so neither attribute the message wants is guaranteed to
+    # be there: a pa.Scalar or a pa.Field has a type but no length, and an
+    # object that is not a pyarrow type at all, a list or an ndarray, has a
+    # length but no type. Both are read defensively, because reading either one
+    # directly turns the documented NotImplementedError into an AttributeError
+    # or a TypeError raised while building the message, which escapes any
+    # caller that wraps this in `except NotImplementedError`.
+    arrow_type = getattr(pa_array, "type", None)
+    if arrow_type is None:
+        described = f"{type(pa_array).__name__}, which is not a pyarrow Array"
+    elif hasattr(pa_array, "__len__"):
+        described = f"an array of {len(pa_array)} elements of type {arrow_type}"
     else:
-        described = f"{type(pa_array).__name__} of type {pa_array.type}"
+        described = f"{type(pa_array).__name__} of type {arrow_type}"
     raise NotImplementedError(f"Not implemented for {described}")
 
 
