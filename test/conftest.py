@@ -7,8 +7,8 @@ import pytest
 
 def spark_unavailable_reason():
     """Reason a SparkSession cannot start here, or None when one can."""
-    if sys.platform != "linux":
-        return "spark tests run on linux only, this platform is %s" % sys.platform
+    if sys.platform not in ("linux", "darwin"):
+        return "spark tests run on linux and macos only, this platform is %s" % sys.platform
     # Mirrors how pyspark picks a java binary: a non-empty JAVA_HOME wins
     # outright and is never checked against the filesystem, so a JAVA_HOME
     # pointing nowhere fails even when java is on PATH. Only an unset
