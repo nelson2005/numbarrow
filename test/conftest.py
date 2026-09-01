@@ -38,6 +38,29 @@ def spark_unavailable_reason():
     return None
 
 
+def arrow_transport_unusable(session):
+    """Reason spark's own arrow transport cannot run here, or None when it can.
+
+    An unsupported java breaks the jvm half of the transport rather than
+    anything on the python side: the arrow jars pyspark bundles reach for a
+    `java.nio.DirectByteBuffer` constructor that a newer jvm no longer
+    provides, and every batch then dies in `MemoryUtil` before numbarrow sees
+    the data. Provoke it with a round trip that carries no numbarrow in it, so
+    the jvm is measured rather than inferred from its version number, and so a
+    failure here is never read as one of ours.
+    """
+    def identity(batches):
+        for batch in batches:
+            yield batch
+
+    try:
+        session.range(1).mapInArrow(identity, "id long").collect()
+    except Exception as exc:
+        return "spark's own arrow transport fails here: %s" % " ".join(
+            str(exc).split("\n")[:2])
+    return None
+
+
 @pytest.fixture(scope="session")
 def spark():
     reason = spark_unavailable_reason()
@@ -64,5 +87,9 @@ def spark():
         .config("spark.ui.enabled", "false")
         .getOrCreate()
     )
+    unusable = arrow_transport_unusable(session)
+    if unusable is not None:
+        session.stop()
+        pytest.skip(unusable)
     yield session
     session.stop()
