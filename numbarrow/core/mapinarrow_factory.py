@@ -74,7 +74,8 @@ def _claim_keys(target: dict, owners: dict[str, str], additions: dict, col: str,
 def make_mapinarrow_func(
     main_func: Callable,
     input_columns: list[str] | None = None,
-    broadcasts: dict | None = None
+    broadcasts: dict | None = None,
+    output_schema: pa.Schema | None = None
 ):
     """
     Creates a function that can be given as an argument to `mapInArrow`
@@ -88,7 +89,8 @@ def make_mapinarrow_func(
         POSITION, not by name, and compares only their types.  The dict's
         insertion order is therefore what decides, and returning two same-typed
         columns in the other order swaps their values with no error.  Build the
-        returned dict in the order the output schema declares.
+        returned dict in the order the output schema declares, or pass
+        ``output_schema`` and let Arrow bind it by name instead.
 
         ``data_dict`` maps a name to an array of data of a supported type.  A
         column of a uniform type contributes one entry under the column name;
@@ -121,6 +123,16 @@ def make_mapinarrow_func(
         `main_func`. When not given, all columns in the iterated over PySpark
         DataFrame will be used.
     :param broadcasts: optional dictionary of broadcast values
+    :param output_schema: optional :class:`pyarrow.Schema` for the batch that is
+        yielded.  When given, the dict returned by ``main_func`` is bound to it
+        BY NAME, so insertion order stops deciding: a column supplied under the
+        wrong key is no longer able to land in another column's position.  A
+        name the schema declares but the dict omits raises :class:`KeyError`,
+        and a value that cannot be converted to the declared type without loss
+        raises :class:`pyarrow.ArrowInvalid`.  A key the schema does not name is
+        dropped silently, which is the one mismatch this does not catch.  Left
+        as ``None`` the batch is built from the dict alone and insertion order
+        decides, which is the behaviour described above.
     """
     broadcasts = broadcasts if broadcasts is not None else {}
 
@@ -171,5 +183,8 @@ def make_mapinarrow_func(
                 _claim_keys(data_dict, data_owners, col_datas, col, "data")
                 _claim_keys(bitmap_dict, bitmap_owners, col_bitmaps, col, "bitmap")
             outputs = main_func(data_dict, bitmap_dict, broadcasts)
-            yield pa.RecordBatch.from_pydict({col: _to_arrow(output) for col, output in outputs.items()})
+            yield pa.RecordBatch.from_pydict(
+                {col: _to_arrow(output) for col, output in outputs.items()},
+                schema=output_schema
+            )
     return _
