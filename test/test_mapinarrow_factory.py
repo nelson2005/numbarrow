@@ -194,3 +194,63 @@ def test_null_struct_element_inside_a_list_row_is_visible():
     bitmap = seen["bitmap"]["v"]
     assert bitmap is not None
     assert [is_null(i, bitmap) for i in range(4)] == [False, True, False, False]
+
+
+OUT_SCHEMA = pa.schema([("a", pa.int64()), ("b", pa.int64())])
+
+
+def run_outputs(outputs, output_schema=None):
+    """Run one batch through the factory with a UDF returning `outputs`."""
+    batch = pa.RecordBatch.from_arrays([pa.array([0, 0], type=pa.int64())], names=["c"])
+
+    def main(data_dict, bitmap_dict, broadcasts):
+        return outputs
+
+    fn = make_mapinarrow_func(main, input_columns=["c"], output_schema=output_schema)
+    return list(fn(iter([batch])))[0]
+
+
+def test_output_schema_binds_the_udf_dict_by_name():
+    # Two same-typed columns built in the other order are what silently swap
+    # when position decides. Naming the schema takes insertion order out of it.
+    outputs = {"b": np.array([10, 20], dtype=np.int64),
+               "a": np.array([1, 2], dtype=np.int64)}
+    got = run_outputs(outputs, OUT_SCHEMA)
+    assert got.schema.names == ["a", "b"]
+    assert got.column("a").to_pylist() == [1, 2]
+    assert got.column("b").to_pylist() == [10, 20]
+
+
+def test_without_an_output_schema_insertion_order_still_decides():
+    # The documented default, pinned so that adding the option did not quietly
+    # change what a caller who passes nothing gets.
+    outputs = {"b": np.array([10, 20], dtype=np.int64),
+               "a": np.array([1, 2], dtype=np.int64)}
+    got = run_outputs(outputs)
+    assert got.schema.names == ["b", "a"]
+    assert got.column("b").to_pylist() == [10, 20]
+
+
+def test_output_schema_refuses_a_column_the_udf_did_not_return():
+    outputs = {"a": np.array([1, 2], dtype=np.int64)}
+    with pytest.raises(KeyError, match="b"):
+        run_outputs(outputs, OUT_SCHEMA)
+
+
+def test_output_schema_refuses_a_value_that_cannot_convert():
+    # A float column against an int64 field: the conversion loses the fraction,
+    # so it raises rather than truncating into the declared type.
+    outputs = {"a": np.array([1.5, 2.5], dtype=np.float64),
+               "b": np.array([3, 4], dtype=np.int64)}
+    with pytest.raises(pa.ArrowInvalid):
+        run_outputs(outputs, OUT_SCHEMA)
+
+
+def test_output_schema_drops_a_key_it_does_not_name():
+    # The one mismatch a schema does not catch, pinned so the docstring's claim
+    # stays true if pyarrow ever starts raising here.
+    outputs = {"a": np.array([1, 2], dtype=np.int64),
+               "b": np.array([3, 4], dtype=np.int64),
+               "c": np.array([5, 6], dtype=np.int64)}
+    got = run_outputs(outputs, OUT_SCHEMA)
+    assert got.schema.names == ["a", "b"]
