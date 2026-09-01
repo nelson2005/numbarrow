@@ -1,0 +1,72 @@
+name: DeepSeek Code Review
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    # Measured: on a ~46 KB diff this action spent over 10 minutes waiting on a single
+    # /chat/completions call. Capped too tightly the job is killed mid-request and no review runs;
+    # left uncapped it can burn the 360-minute default. The action exposes no per-request timeout,
+    # and its `max-length` input SKIPS the review (exiting success) rather than truncating, which
+    # would hide the problem behind a green check.
+    #
+    # Restricted to same-repo pull requests. `pull_request_target` fires for a pull request from
+    # a fork too, and nothing gates the author: the action's own `allowed-associations` check runs
+    # only on its `issue_comment` path, and its review script has no fork or association check at
+    # all, so a fork pull request would spend the paid CHAT_TOKEN. The action never checks out the
+    # head, so this guards cost and noise rather than code execution.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # `secrets` is not available in a job-level `if`, so the presence check is hoisted here and
+      # applied to the step instead. Without a token the action exits INVALID_PARAMETER and posts
+      # a "provide your token" comment on every pull request; skipping is silent.
+      HAS_CHAT_TOKEN: ${{ secrets.CHAT_TOKEN != '' }}
+    steps:
+      - if: env.HAS_CHAT_TOKEN == 'true'
+        uses: hustcer/deepseek-review@eccde2e9781008d795e366b951e313e37af88dd5 # v1.21
+        with:
+          chat-token: ${{ secrets.CHAT_TOKEN }}
+          model: deepseek-v4-pro
+          exclude-patterns: 'docs/**,*.md,CLAUDE.md,.github/**'
+          sys-prompt: |
+            You are a senior code reviewer. Your sole job is to surface defects
+            in the diff. A defect is one of:
+              - a bug (wrong behavior, crash, race, off-by-one, null/None, type error)
+              - a security vulnerability (injection, auth bypass, secret leak, unsafe deserialization)
+              - a real performance problem (accidentally quadratic, N+1 query, unbounded allocation)
+              - data loss, data corruption, or a breaking API/contract change
+              - a concurrency or resource-leak bug (unclosed handle, deadlock, lost wakeup)
+
+            Hard rules:
+              1. Only report defects from the list above. Ignore style, naming,
+                 formatting, comments/docstrings, test coverage gaps, refactor
+                 ideas, "consider extracting", "you could also", and any
+                 suggestion that is not a concrete defect.
+              2. If the diff has no defects, reply with exactly: "No issues found."
+                 Do not pad. Do not summarize the change. Do not praise the code.
+              3. Do not restate what the code does. Do not explain the diff.
+              4. No preamble, no conclusion, no "overall the code looks good".
+              5. Cite file:line for every finding. If you cannot cite a location,
+                 do not include the finding.
+              6. Confidence threshold: only report findings you are >80% sure
+                 are real defects on the changed lines. When in doubt, omit.
+
+            Output format — strict markdown, nothing else:
+
+            ### <Severity: Critical|High|Medium> — <one-line title>
+            **File:** `path/to/file.ext:LINE`
+            **Problem:** <1-2 sentences, what is wrong and why it breaks>
+            **Fix:** <1-2 sentences, the concrete change>
+
+            Repeat the block per finding. Order by severity, Critical first.
+            Omit Medium findings entirely unless they cause incorrect behavior.
+          user-prompt: |
+            Review the diff below against the rules in the system prompt.
+            Report only defects on lines that were added or modified.
