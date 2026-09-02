@@ -14,7 +14,7 @@ from numba.core.types import boolean, int64, Array, uint8, bool_
 from numbarrow.core.configurations import jit_options
 
 
-@njit(boolean(int64, Array(uint8, 1, "C")), **jit_options)
+@njit(boolean(int64, Array(uint8, 1, "C", readonly=True)), **jit_options)
 def is_null(index_: int, bitmap: np.ndarray) -> bool:
     """Check whether element *index_* is null according to *bitmap*.
 
@@ -32,7 +32,7 @@ def is_null(index_: int, bitmap: np.ndarray) -> bool:
     return not (byte_for_index >> bit_position_in_byte) % 2
 
 
-@njit(Array(bool_, 1, "C")(int64, int64, Array(uint8, 1, "C")), **jit_options)
+@njit(Array(bool_, 1, "C")(int64, int64, Array(uint8, 1, "C", readonly=True)), **jit_options)
 def unpack_booleans(offset: int, length: int, packed_data: np.ndarray) -> np.ndarray:
     """Unpack bit-packed boolean data into a boolean array.
 
