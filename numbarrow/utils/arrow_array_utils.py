@@ -6,7 +6,6 @@ with offset buffers), struct arrays, and list-of-struct arrays. Validity
 bitmaps are extracted as uint8 arrays for use with :func:`~numbarrow.core.is_null.is_null`.
 """
 
-import ctypes
 import numpy as np
 import pyarrow as pa
 
@@ -106,7 +105,7 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
         raise ValueError(
             f"{pa_str_array.type} array of length {n} has no {missing} buffer"
         )
-    data_p = data_buf.address
+    buf_view = memoryview(data_buf)
     offsets_p = offsets_buf.address
     offset_dtype = np.int64 if pa.types.is_large_string(pa_str_array.type) else np.int32
     offsets_len = offsets_buf.size // np.dtype(offset_dtype).itemsize
@@ -129,8 +128,7 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
     # bytes rather than from a second decode of every element.
     span_start, span_stop = int(bounds[0]), int(bounds[n])
     if span_stop > span_start:
-        raw = np.frombuffer(memoryview(data_buf), dtype=np.uint8,
-                            count=span_stop - span_start, offset=span_start)
+        raw = np.frombuffer(buf_view, dtype=np.uint8, count=span_stop - span_start, offset=span_start)
         starts_a_char = (raw & 0xC0) != 0x80
         # reduceat sums raw[idx[i]:idx[i+1]]; for an empty range it yields
         # raw[idx[i]] instead of 0, which can only overstate an empty slot by
@@ -168,7 +166,7 @@ def create_str_array(pa_str_array: pa.StringArray | pa.LargeStringArray) -> tupl
             continue
         start = int(bounds[i])
         length = int(bounds[i + 1]) - start
-        str_array[i] = ctypes.string_at(data_p + start, length).decode("utf-8")
+        str_array[i] = bytes(buf_view[start:start + length]).decode("utf-8")
     bitmap = create_bitmap(bitmap_buf, offset, n)
     # A fresh numpy allocation, but read-only all the same, so that the
     # contract does not depend on which Arrow type the caller happened to pass.
