@@ -15,7 +15,9 @@ jobs:
     strategy:
       matrix:
         python-version: [ "3.10", "3.11", "3.12" ]
-        numba-version: [ "0.60.0", "0.63.0" ]
+        # The newest numba the dependency cap admits is exercised here, so the
+        # next bump to that cap is backed by a run rather than by inspection.
+        numba-version: [ "0.60.0", "0.63.0", "0.67.0" ]
         arch: [ "ubuntu-latest", "ubuntu-24.04-arm", "windows-latest" ]
     runs-on: "${{ matrix.arch }}"
 
@@ -55,7 +57,7 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
-        pytest
+        pytest --durations=20
     - name: Install build dependencies
       run: |
         pip install build==1.2.2.post1 wheel==0.45.0
@@ -64,10 +66,74 @@ jobs:
         git clean -Xfd
         python -m build --wheel
 
+  build-pyarrow-range:
+    # The ends of the pyarrow range the dependency cap admits, as a separate
+    # job so that pinning them does not multiply the matrix above. The real
+    # constraint is numpy, not pyarrow: 14.0.0 passes, but pyarrow below 16 is
+    # built against numpy 1 and dies with "numpy.core.multiarray failed to
+    # import" if numpy 2 is present, so the floor cell pins numpy too.
+    # Neither pandas nor pyspark is
+    # installed here, so this is also the stock-install shape: the adapters
+    # must resolve a dtype without importing pandas, and the spark tests
+    # skip themselves.
+    strategy:
+      # Both ends report independently: a failure at the floor should not cancel
+      # the ceiling cell, since the point of the job is the comparison.
+      fail-fast: false
+      matrix:
+        include:
+          - pyarrow-version: "14.0.0"
+            numpy-pin: "numpy<2"
+          - pyarrow-version: "24.0.0"
+            numpy-pin: ""
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+    - name: Write version to __init__.py
+      shell: bash
+      run: echo "__version__ = '0.1.${{ github.run_number }}'" > numbarrow/__init__.py
+    - name: Install dependencies
+      # The matrix values reach the shell as environment variables rather than
+      # being pasted into the script text. The numpy pin contains a `<`, which
+      # the shell reads as a redirection when it is substituted unquoted: the
+      # step died with "line 5: 2: No such file or directory" while looking for
+      # a file called 2. The :+ form expands to nothing at all when the pin is
+      # empty, rather than passing pip an empty argument.
+      env:
+        PYARROW_VERSION: ${{ matrix.pyarrow-version }}
+        NUMPY_PIN: ${{ matrix.numpy-pin }}
+      run: |
+        python -m pip install --upgrade pip
+        # python-dateutil is imported by the test suite; without it pytest
+        # aborts collection and the job goes red having run nothing.
+        pip install flake8 pytest setuptools python-dateutil
+        pip install "pyarrow==${PYARROW_VERSION}" ${NUMPY_PIN:+"${NUMPY_PIN}"}
+        pip install --ignore-requires-python -e .
+        pip check
+    - name: Test with pytest
+      run: |
+        pytest --durations=20
+
   build-macos:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v6
+    - name: Report the image's own jvm
+      run: java -version || echo "no java on PATH"
+    - name: Set up Java
+      # The arrow jars pyspark 3.5.7 bundles are 12.0.1, and they reach for a
+      # java.nio.DirectByteBuffer constructor that the image's default jvm does
+      # not provide, so every arrow batch dies in MemoryUtil before any
+      # numbarrow code runs. Spark 3.5 supports java 8, 11 and 17.
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: "17"
     - name: Set up Python
       uses: actions/setup-python@v6
       with:
@@ -87,7 +153,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pytest
+        pip install flake8 pytest setuptools
         pip install numba==0.63.0
         pip install pandas==2.3.2
         pip install pyspark==3.5.7
@@ -99,7 +165,7 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
-        pytest
+        pytest --durations=20
     - name: Install build dependencies
       run: |
         pip install build==1.2.2.post1 wheel==0.45.0
