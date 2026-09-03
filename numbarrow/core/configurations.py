@@ -15,7 +15,8 @@ def get_jit_options():
 
     The value must be a JSON object and is passed to ``@njit`` as keyword arguments unchanged, for example
     ``export NUMBARROW_JIT_OPTIONS='{"cache": false}'``. Unset or empty means ``{"cache": True}``; anything else
-    raises ``ValueError``. Read once, when this module is first imported.
+    raises ``ValueError``. Each call reads the environment afresh; the module-level ``jit_options`` holds the
+    value read when this module was first imported, and that is what the decorators use.
     """
     as_str = os.environ.get("NUMBARROW_JIT_OPTIONS")
     if not as_str:

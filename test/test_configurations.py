@@ -24,7 +24,7 @@ def test_an_empty_value_is_treated_as_unset(monkeypatch):
     assert get_jit_options() == {"cache": True}
 
 
-@pytest.mark.parametrize("value", ["{cache: false}", "[1, 2]", "null", '"cache"', "1"])
+@pytest.mark.parametrize("value", ["{cache: false}", "[1, 2]", "null", '"cache"', "1", "   "])
 def test_anything_that_is_not_a_json_object_is_rejected(monkeypatch, value):
     monkeypatch.setenv("NUMBARROW_JIT_OPTIONS", value)
     with pytest.raises(ValueError, match=re.escape(invalid_jit_options_err)):
