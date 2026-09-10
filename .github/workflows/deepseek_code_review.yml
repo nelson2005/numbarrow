@@ -2,6 +2,26 @@ name: DeepSeek Code Review
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
+    # Without this the job starts on a pull request whose every changed file is
+    # excluded below, `exclude-patterns` reduces the diff to nothing, and the
+    # action sends the empty diff to the model regardless. Measured on numbox,
+    # which runs this same pinned action: three runs logged "Review content
+    # length: 0" against a 432 token prompt, the system prompt alone, and each
+    # returned invented findings citing paths that repository has never held.
+    # The model is still bound by the strict output format, so it fills the
+    # format from the defect categories the prompt lists. Given a real diff the
+    # same action cited a real file and line, so the model is not at fault and
+    # the action has no empty-diff guard to enable. Not running is the guard.
+    #
+    # Keep this list in step with `exclude-patterns`: `**.md` covers CLAUDE.md.
+    # Drift is asymmetric. Too narrow and an empty diff reaches the model again;
+    # too broad and a reviewable pull request is skipped in silence. A pull
+    # request that also touches something reviewable still runs, and
+    # `exclude-patterns` strips the rest from its diff.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.github/**'
 
 permissions:
   pull-requests: write
