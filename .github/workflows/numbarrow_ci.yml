@@ -56,6 +56,11 @@ jobs:
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
+      # The Spark leg skips itself wherever it cannot run, so losing every
+      # end-to-end test would be a green run. The linux cells have a jvm that
+      # runs it and are told to require it; windows never runs it.
+      env:
+        NUMBARROW_REQUIRE_SPARK: ${{ !startsWith(matrix.arch, 'windows') && '1' || '' }}
       run: |
         pytest --durations=20
     - name: Install build dependencies
@@ -164,6 +169,9 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
+      # Java 17 was set up above precisely so that the Spark leg runs here.
+      env:
+        NUMBARROW_REQUIRE_SPARK: "1"
       run: |
         pytest --durations=20
     - name: Install build dependencies
