@@ -1,9 +1,10 @@
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from numbarrow.core.is_null import is_null
-from numbarrow.core.mapinarrow_factory import make_mapinarrow_func
+from numbarrow.core.mapinarrow_factory import Nullable, make_mapinarrow_func
 
 
 def run_batch(batch, input_columns=None):
@@ -13,7 +14,7 @@ def run_batch(batch, input_columns=None):
     def main(data_dict, bitmap_dict, broadcasts):
         seen["data"] = data_dict
         seen["bitmap"] = bitmap_dict
-        return {"out": np.asarray(next(iter(data_dict.values())))}
+        return {"out": np.zeros(1, dtype=np.int64)}
 
     list(make_mapinarrow_func(main, input_columns=input_columns)(iter([batch])))
     return seen
@@ -30,15 +31,15 @@ def test_struct_null_row_reaches_the_udf():
     # per field does.
     col = pa.array([{"v": 10}, None, {"v": 30}], type=pa.struct([pa.field("v", pa.int64())]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-    assert sorted(seen["bitmap"]) == ["v"]
-    assert nulls(seen["bitmap"]["v"], 3) == [False, True, False]
+    assert sorted(seen["bitmap"]) == ["s"] and sorted(seen["bitmap"]["s"]) == ["v"]
+    assert nulls(seen["bitmap"]["s"]["v"], 3) == [False, True, False]
 
 
 def test_no_bitmap_when_nothing_is_null_at_either_layer():
     col = pa.array([{"v": 10}, {"v": 30}], type=pa.struct([pa.field("v", pa.int64())]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-    assert "v" in seen["bitmap"] and seen["bitmap"]["v"] is None
-    assert seen["data"]["v"].tolist() == [10, 30]
+    assert "v" in seen["bitmap"]["s"] and seen["bitmap"]["s"]["v"] is None
+    assert seen["data"]["s"]["v"].tolist() == [10, 30]
 
 
 def test_both_null_layers_are_folded_together():
@@ -46,55 +47,61 @@ def test_both_null_layers_are_folded_together():
     col = pa.StructArray.from_arrays([inner], ["v"], mask=pa.array([False, False, True]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
     #                      valid, null field, null row
-    assert nulls(seen["bitmap"]["v"], 3) == [False, True, True]
+    assert nulls(seen["bitmap"]["s"]["v"], 3) == [False, True, True]
 
 
-def test_a_field_named_after_its_own_column_is_unambiguous():
-    # One column, one field, one key: nothing is lost, so nothing should raise.
+def test_a_field_named_after_its_own_column_is_reachable():
     col = pa.array([{"s": 1}], type=pa.struct([("s", pa.int64())]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-    assert seen["data"]["s"].tolist() == [1]
+    assert seen["data"]["s"]["s"].tolist() == [1]
 
 
 def test_struct_column_named_after_another_columns_field():
-    # A struct column called 'region' next to store: struct<region, sqft>. The
-    # data keys are code/region/sqft, all distinct, so this must keep working.
+    # A struct column called 'region' next to store: struct<region, sqft>. Each
+    # field sits under its own column, so the two names never meet.
     region = pa.array([{"code": 1}, {"code": 2}], type=pa.struct([("code", pa.int64())]))
     store = pa.array([{"region": 10, "sqft": 1.0}, {"region": 20, "sqft": 2.0}],
                      type=pa.struct([("region", pa.int64()), ("sqft", pa.float64())]))
     batch = pa.RecordBatch.from_arrays([region, store], names=["region", "store"])
     for order in (["region", "store"], ["store", "region"]):
         seen = run_batch(batch, input_columns=order)
-        assert sorted(seen["data"]) == ["code", "region", "sqft"]
-        assert seen["data"]["code"].tolist() == [1, 2]
-        assert seen["data"]["region"].tolist() == [10, 20]
+        assert list(seen["data"]) == order
+        assert seen["data"]["region"]["code"].tolist() == [1, 2]
+        assert seen["data"]["store"]["region"].tolist() == [10, 20]
+        assert sorted(seen["data"]["store"]) == ["region", "sqft"]
 
 
 def test_duplicate_input_columns_is_harmless():
-    # Naming a column twice produced the same arrays twice before the
-    # duplicate-key check existed, so it must not become an error.
+    # Naming a column twice produces the same arrays twice, so it must not
+    # become an error.
     batch = pa.RecordBatch.from_arrays([pa.array([1, 2], type=pa.int64())], names=["a"])
     seen = run_batch(batch, input_columns=["a", "a"])
     assert seen["data"]["a"].tolist() == [1, 2]
     assert sorted(seen["bitmap"]) == ["a"]
 
 
-def test_colliding_struct_field_name_raises():
+def test_input_columns_selects_only_the_named_columns():
+    # input_columns had no end-to-end test: every column reaching the UDF
+    # regardless kept the suite green.
+    batch = pa.RecordBatch.from_pydict({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+    seen = run_batch(batch, input_columns=["c", "a"])
+    assert list(seen["data"]) == ["c", "a"] and list(seen["bitmap"]) == ["c", "a"]
+    assert seen["data"]["c"].tolist() == [5, 6]
+
+
+def test_a_struct_field_sharing_a_column_name_reaches_the_udf():
+    # Four ordinary Spark StructTypes convert to this shape: a top-level column
+    # and a struct field sharing a name. Nested under its column, the field
+    # neither replaces the column nor collides with it, whichever comes first.
     ids = pa.array([1, 2], type=pa.int64())
     orders = pa.array([{"id": 10, "total": 1.5}, {"id": 20, "total": 2.5}],
                       type=pa.struct([("id", pa.int64()), ("total", pa.float64())]))
     batch = pa.RecordBatch.from_arrays([ids, orders], names=["id", "order"])
-    with pytest.raises(ValueError, match="'id'"):
-        run_batch(batch)
-
-
-def test_colliding_names_raise_whichever_column_comes_first():
-    ids = pa.array([1, 2], type=pa.int64())
-    orders = pa.array([{"id": 10}, {"id": 20}], type=pa.struct([("id", pa.int64())]))
-    batch = pa.RecordBatch.from_arrays([ids, orders], names=["id", "order"])
     for order in (["id", "order"], ["order", "id"]):
-        with pytest.raises(ValueError, match="'id'"):
-            run_batch(batch, input_columns=order)
+        seen = run_batch(batch, input_columns=order)
+        assert seen["data"]["id"].tolist() == [1, 2]
+        assert seen["data"]["order"]["id"].tolist() == [10, 20]
+        assert seen["bitmap"]["id"] is None and seen["bitmap"]["order"]["id"] is None
 
 
 def test_null_free_column_arrives_as_none():
@@ -128,13 +135,13 @@ def test_null_free_column_of_every_supported_top_level_type():
     assert all(seen["bitmap"][name] is None for name in columns)
 
 
-def test_list_of_struct_column_keys_by_field_name():
+def test_list_of_struct_column_nests_its_fields():
     col = pa.array([[{"v": 1}, {"v": 2}], [{"v": 3}, {"v": 4}]],
                    type=pa.list_(pa.struct([("v", pa.int64())])))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
-    assert sorted(seen["bitmap"]) == ["v"]
-    assert sorted(seen["data"]) == ["v"]
-    assert seen["data"]["v"].tolist() == [1, 2, 3, 4]
+    assert sorted(seen["bitmap"]["rows"]) == ["v"]
+    assert sorted(seen["data"]["rows"]) == ["v"]
+    assert seen["data"]["rows"]["v"].tolist() == [1, 2, 3, 4]
 
 
 def test_empty_batch():
@@ -144,14 +151,16 @@ def test_empty_batch():
     assert "a" in seen["bitmap"]
 
 
-def test_zero_field_struct_column_is_refused_rather_than_dropped():
-    # A struct with no fields contributes no key, so a requested column used to
-    # vanish from both dicts without a word.
+def test_zero_field_struct_column_arrives_as_an_empty_dict():
+    # A struct with no fields used to contribute no key at all, so a requested
+    # column vanished from both dicts without a word. Nested under its own
+    # name it is present and empty.
     z = pa.array([{}, {}], type=pa.struct([]))
     n = pa.array([1, 2], type=pa.int64())
     batch = pa.RecordBatch.from_arrays([z, n], names=["z", "n"])
-    with pytest.raises(ValueError, match="'z'"):
-        run_batch(batch)
+    seen = run_batch(batch)
+    assert seen["data"]["z"] == {} and seen["bitmap"]["z"] == {}
+    assert seen["data"]["n"].tolist() == [1, 2]
 
 
 def test_two_fields_of_one_struct_do_not_share_a_bitmap():
@@ -163,7 +172,7 @@ def test_two_fields_of_one_struct_do_not_share_a_bitmap():
     col = pa.StructArray.from_arrays([inner_a, inner_b], ["a", "b"],
                                      mask=pa.array([False, True]))
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["s"]))
-    bitmap_a, bitmap_b = seen["bitmap"]["a"], seen["bitmap"]["b"]
+    bitmap_a, bitmap_b = seen["bitmap"]["s"]["a"], seen["bitmap"]["s"]["b"]
     assert bitmap_a is not bitmap_b
     assert bitmap_a.tolist() == bitmap_b.tolist()
     bitmap_a[0] = 0
@@ -191,7 +200,7 @@ def test_null_struct_element_inside_a_list_row_is_visible():
     col = pa.ListArray.from_arrays(pa.array([0, 2, 4], type=pa.int32()), inner)
     assert col.null_count == 0
     seen = run_batch(pa.RecordBatch.from_arrays([col], names=["rows"]))
-    bitmap = seen["bitmap"]["v"]
+    bitmap = seen["bitmap"]["rows"]["v"]
     assert bitmap is not None
     assert [is_null(i, bitmap) for i in range(4)] == [False, True, False, False]
 
@@ -242,15 +251,300 @@ def test_output_schema_refuses_a_value_that_cannot_convert():
     # so it raises rather than truncating into the declared type.
     outputs = {"a": np.array([1.5, 2.5], dtype=np.float64),
                "b": np.array([3, 4], dtype=np.int64)}
-    with pytest.raises(pa.ArrowInvalid):
+    with pytest.raises(pa.ArrowInvalid, match="'a'"):
         run_outputs(outputs, OUT_SCHEMA)
 
 
-def test_output_schema_drops_a_key_it_does_not_name():
-    # The one mismatch a schema does not catch, pinned so the docstring's claim
-    # stays true if pyarrow ever starts raising here.
+def test_an_empty_string_column_keeps_its_type():
+    # pa.array([]) infers null where the same column with rows infers string,
+    # so a UDF that filtered a whole batch away yielded a schema its other
+    # batches did not share, and Spark's writer refused the second one.
+    outputs = {"s": np.empty(0, dtype="<U5"), "n": np.empty(0, dtype=np.int64)}
+    got = run_outputs(outputs)
+    assert got.schema.types == [pa.string(), pa.int64()]
+    assert got.num_rows == 0
+
+
+def test_a_bytes_column_keeps_its_nuls():
+    # A |S array handed straight to pa.array is read with C string semantics,
+    # the same cut a |U array used to get.
+    values = [b"a\x00b", b"\x00lead", b"plain", b"x\x00\x00y"]
+    got = run_outputs({"b": np.array(values, dtype="S5")})
+    assert got.column("b").type == pa.binary()
+    assert got.column("b").to_pylist() == values
+
+
+def test_output_schema_refuses_a_key_it_does_not_name():
+    # An unnamed key used to be dropped silently, the one mismatch the schema
+    # did not catch.
     outputs = {"a": np.array([1, 2], dtype=np.int64),
                "b": np.array([3, 4], dtype=np.int64),
                "c": np.array([5, 6], dtype=np.int64)}
-    got = run_outputs(outputs, OUT_SCHEMA)
-    assert got.schema.names == ["a", "b"]
+    with pytest.raises(ValueError, match="'c'"):
+        run_outputs(outputs, OUT_SCHEMA)
+
+
+def test_a_dict_under_one_output_key_is_refused():
+    # pa.array iterates a mapping, so this used to come back as a string
+    # column of the keys, two rows long, with nothing raised.
+    arr = np.array([1, 2], dtype=np.int64)
+    with pytest.raises(TypeError, match="'s'"):
+        run_outputs({"s": {"a": arr, "b": arr}})
+    with pytest.raises(TypeError, match="'s'"):
+        run_outputs({"s": {"a": arr, "b": arr}}, pa.schema([("s", pa.string())]))
+
+
+def test_output_schema_builds_a_string_column_as_declared():
+    schema = pa.schema([("s", pa.large_string())])
+    got = run_outputs({"s": np.array(["x", "y\x00z"])}, schema)
+    assert got.column("s").type == pa.large_string()
+    assert got.column("s").to_pylist() == ["x", "y\x00z"]
+    empty = run_outputs({"s": np.empty(0, dtype="<U1")}, schema)
+    assert empty.column("s").type == pa.large_string()
+
+
+def test_output_schema_refuses_a_struct_key_no_field_has():
+    # Arrow matches struct fields by exact name and nulls a missing one, so a
+    # list of dicts keyed Amount/Label against amount/label used to come back
+    # as two columns of nulls under an identical schema.
+    schema = pa.schema([("s", pa.struct([("amount", pa.int64()), ("label", pa.string())]))])
+    got = run_outputs({"s": [{"amount": 1, "label": "x"}, {"amount": 2}]}, schema)
+    assert got.column("s").to_pylist() == [{"amount": 1, "label": "x"}, {"amount": 2, "label": None}]
+    with pytest.raises(ValueError, match="Amount"):
+        run_outputs({"s": [{"Amount": 1, "Label": "x"}]}, schema)
+
+
+def test_output_schema_refuses_a_struct_array_whose_fields_differ():
+    # A ready-built StructArray was cast to the declared type, and a cast
+    # matches struct fields by name too: x/y against p/q came back all null.
+    declared = pa.schema([("s", pa.struct([("p", pa.int64()), ("q", pa.int64())]))])
+    built = pa.array([{"x": 1, "y": 2}], type=pa.struct([("x", pa.int64()), ("y", pa.int64())]))
+    with pytest.raises(ValueError, match="'x'"):
+        run_outputs({"s": built}, declared)
+    same_names = pa.array([{"p": 1, "q": 2}], type=pa.struct([("p", pa.int32()), ("q", pa.int32())]))
+    got = run_outputs({"s": same_names}, declared)
+    assert got.column("s").type == declared.field("s").type
+    assert got.column("s").to_pylist() == [{"p": 1, "q": 2}]
+    nested = pa.array([[{"x": 1}]], type=pa.list_(pa.struct([("x", pa.int64())])))
+    with pytest.raises(ValueError, match="'x'"):
+        run_outputs({"s": nested}, pa.schema([("s", pa.list_(pa.struct([("p", pa.int64())])))]))
+
+
+def test_a_struct_key_no_field_has_is_refused_at_any_depth():
+    # The check used to cover a plain list of dicts against a struct field and
+    # nothing else: a list-of-struct column, a struct inside a struct, an
+    # object array and a generator all came back null on the same typo.
+    inner = pa.struct([("amount", pa.int64())])
+    cases = {
+        "list of structs": (pa.list_(inner), [[{"Amount": 1}], [{"amount": 2}]]),
+        "struct in struct": (pa.struct([("id", pa.int64()), ("inner", inner)]),
+                             [{"id": 1, "inner": {"Amount": 9}}]),
+        "object array of dicts": (inner, np.array([{"Amount": 1}, {"amount": 2}], dtype=object)),
+        "generator of dicts": (inner, ({"Amount": i} for i in range(2))),
+        "map of structs": (pa.map_(pa.string(), inner), [{"k": {"Amount": 1}}]),
+        "map of structs from pairs": (pa.map_(pa.string(), inner), [[("k", {"Amount": 1})]]),
+        "struct-keyed map": (pa.map_(inner, pa.int64()), [[({"Amount": 1}, 5)]]),
+    }
+    for label, (declared_type, value) in cases.items():
+        with pytest.raises(ValueError, match="Amount"):
+            run_outputs({"s": value}, pa.schema([("s", declared_type)]))
+    good = run_outputs({"s": [[{"amount": 1}], [{"amount": 2}]]}, pa.schema([("s", pa.list_(inner))]))
+    assert good.column("s").to_pylist() == [[{"amount": 1}], [{"amount": 2}]]
+    pairs = run_outputs({"s": [[("k", {"amount": 1})]]}, pa.schema([("s", pa.map_(pa.string(), inner))]))
+    assert pairs.column("s").to_pylist() == [[("k", {"amount": 1})]]
+
+
+def test_a_malformed_map_pair_is_refused_naming_the_column():
+    # A one-element "pair" reaches pa.array's own refusal rather than an
+    # IndexError from the key check, so the column is named.
+    schema = pa.schema([("m", pa.map_(pa.string(), pa.int64()))])
+    with pytest.raises((ValueError, TypeError), match="'m'"):
+        run_outputs({"m": [[("k",)]]}, schema)
+
+
+def test_output_columns_of_different_lengths_are_named():
+    # pyarrow's own refusal says "2 vs 3" and names neither column.
+    with pytest.raises(ValueError, match=r"'a': 3.*'b': 2"):
+        run_outputs({"a": [1, 2, 3], "b": [1, 2]})
+    with pytest.raises(ValueError, match=r"'a': 3.*'b': 2"):
+        run_outputs({"a": [1, 2, 3], "b": [1, 2]}, OUT_SCHEMA)
+
+
+def test_an_overflowing_output_value_names_its_column():
+    with pytest.raises(OverflowError, match="'i'"):
+        run_outputs({"i": [10 ** 400, 2]}, pa.schema([("i", pa.int64())]))
+
+
+def test_output_schema_builds_a_map_column():
+    # A map has no inferred type to be cast from: a list of dicts infers a
+    # struct, which does not cast to map, and a list of pairs fails inference.
+    schema = pa.schema([("m", pa.map_(pa.string(), pa.int64()))])
+    for value in ([{"k": 1, "j": 2}], [[("k", 1), ("j", 2)]]):
+        got = run_outputs({"m": value}, schema)
+        assert got.column("m").type == schema.field("m").type
+        assert got.column("m").to_pylist() == [[("k", 1), ("j", 2)]]
+
+
+def test_a_record_array_becomes_a_struct_column():
+    # The one ndarray shape that means struct, and what an @njit function
+    # returns for a numba record type; pa.array refuses it outright.
+    records = np.array([(1, 2.5, "ab"), (3, 4.5, "c\x00d")],
+                       dtype=[("i", "i8"), ("f", "f8"), ("s", "U3")])
+    got = run_outputs({"r": records})
+    assert got.column("r").type == pa.struct([("i", pa.int64()), ("f", pa.float64()), ("s", pa.string())])
+    assert got.column("r").to_pylist() == [{"i": 1, "f": 2.5, "s": "ab"}, {"i": 3, "f": 4.5, "s": "c\x00d"}]
+    declared = pa.schema([("r", pa.struct([("i", pa.int32()), ("s", pa.large_string()), ("extra", pa.int64())]))])
+    got = run_outputs({"r": records[["i", "s"]]}, declared)
+    assert got.column("r").type == declared.field("r").type
+    assert got.column("r").to_pylist() == [{"i": 1, "s": "ab", "extra": None}, {"i": 3, "s": "c\x00d", "extra": None}]
+    with pytest.raises(ValueError, match="'f'"):
+        run_outputs({"r": records}, declared)
+
+
+def test_an_output_side_failure_names_its_column():
+    with pytest.raises(pa.ArrowInvalid, match="'bad'"):
+        run_outputs({"bad": np.zeros((2, 2))})
+    with pytest.raises(pa.ArrowInvalid, match="'a'"):
+        run_outputs({"a": np.array([1.5, 2.5])}, pa.schema([("a", pa.int64())]))
+    with pytest.raises(TypeError, match="'a'"):
+        run_outputs({"a": 3})
+
+
+def test_main_func_must_return_a_dict():
+    # Matched on the refusal's own words: "'NoneType' object is not iterable"
+    # from the code after the guard also names NoneType.
+    with pytest.raises(TypeError, match="main_func must return a dict.*NoneType"):
+        run_outputs(None)
+
+
+def test_an_all_none_object_column_keeps_a_declared_type():
+    # Without a schema an object column of Nones infers null, the same trap an
+    # empty string column used to fall into.
+    schema = pa.schema([("s", pa.string())])
+    got = run_outputs({"s": np.array([None, None], dtype=object)}, schema)
+    assert got.column("s").type == pa.string() and got.column("s").null_count == 2
+    assert run_outputs({"s": np.array([None, None], dtype=object)}).column("s").type == pa.null()
+
+
+def test_a_nullable_carries_the_input_nulls_out():
+    # A bare array republishes every null as the value under it, so [1, None, 3]
+    # came back [1, 0, 3] with nothing said. Nullable folds the bitmap the UDF
+    # was handed back in, with or without a declared type.
+    column = pa.array([1, None, 3], type=pa.int64())
+    batch = pa.RecordBatch.from_arrays([column], names=["c"])
+
+    def double(data_dict, bitmap_dict, broadcasts):
+        return {"bare": data_dict["c"] * 2, "kept": Nullable(data_dict["c"] * 2, bitmap_dict["c"])}
+
+    got = list(make_mapinarrow_func(double, input_columns=["c"])(iter([batch])))[0]
+    assert got.column("bare").to_pylist() == [2, 0, 6]
+    assert got.column("kept").to_pylist() == [2, None, 6]
+
+    def through(data_dict, bitmap_dict, broadcasts):
+        return {"kept": Nullable(data_dict["c"], bitmap_dict["c"])}
+
+    schema = pa.schema([("kept", pa.float64())])
+    typed = list(make_mapinarrow_func(through, input_columns=["c"], output_schema=schema)(iter([batch])))[0]
+    assert typed.column("kept").type == pa.float64()
+    assert typed.column("kept").to_pylist() == [1.0, None, 3.0]
+
+
+def test_a_nullable_masks_a_value_the_caller_masked_out():
+    # pc.if_else clears the validity bit and leaves the value's bytes in the
+    # buffer, so a bare pass-through hands the masked-out value straight back.
+    values = pa.array([1, 42, 3], type=pa.int64())
+    column = pc.if_else(pa.array([True, False, True]), values, pa.scalar(None, pa.int64()))
+    batch = pa.RecordBatch.from_arrays([column], names=["c"])
+
+    def both(data_dict, bitmap_dict, broadcasts):
+        return {"bare": data_dict["c"], "kept": Nullable(data_dict["c"], bitmap_dict["c"])}
+
+    got = list(make_mapinarrow_func(both, input_columns=["c"])(iter([batch])))[0]
+    assert got.column("bare").to_pylist() == [1, 42, 3]
+    assert got.column("kept").to_pylist() == [1, None, 3]
+
+
+def test_a_nullable_takes_the_bitmap_and_the_data_zero_copy():
+    # A fixed-width column with no nulls of its own takes the bitmap as its
+    # validity buffer and keeps the ndarray as its data buffer.
+    data = np.array([1, 2, 3], dtype=np.int64)
+    bitmap = np.array([0b101], dtype=np.uint8)
+    got = run_outputs({"a": Nullable(data, bitmap)}).column("a")
+    assert got.to_pylist() == [1, None, 3]
+    assert got.buffers()[0].address == bitmap.ctypes.data
+    assert got.buffers()[1].address == data.ctypes.data
+
+
+def test_a_nullable_keeps_the_nulls_the_data_already_has():
+    # A list holding None, a sliced Arrow array and a struct column cannot take
+    # the bitmap as a buffer; they are masked instead, and keep their own nulls.
+    bitmap = np.array([0b011], dtype=np.uint8)
+    assert run_outputs({"a": Nullable([None, 2, 3], bitmap)}).column("a").to_pylist() == [None, 2, None]
+    sliced = pa.array([9, 1, 2, 3], type=pa.int64())[1:]
+    assert run_outputs({"a": Nullable(sliced, bitmap)}).column("a").to_pylist() == [1, 2, None]
+    records = np.array([(1, 2.5), (3, 4.5)], dtype=[("i", "i8"), ("f", "f8")])
+    got = run_outputs({"r": Nullable(records, np.array([0b10], dtype=np.uint8))}).column("r")
+    assert got.to_pylist() == [None, {"i": 3, "f": 4.5}]
+
+
+def test_a_nullable_with_no_bitmap_is_the_bare_array():
+    # bitmap_dict hands out None where the batch carries no validity buffer,
+    # so passing it through must cost nothing and change nothing.
+    got = run_outputs({"a": Nullable(np.array([1, 2], dtype=np.int64), None)}).column("a")
+    assert got.to_pylist() == [1, 2] and got.null_count == 0
+    empty = run_outputs({"a": Nullable(np.empty(0, dtype=np.int64), np.empty(0, dtype=np.uint8))})
+    assert empty.num_rows == 0 and empty.column("a").type == pa.int64()
+
+
+def test_a_bitmap_of_the_wrong_length_is_refused():
+    # The bitmap covers 8 rows per byte; one of any other size is a bitmap for
+    # some other column, and pyarrow would read it without a word.
+    data = np.array([1, 2, 3], dtype=np.int64)
+    with pytest.raises(ValueError, match=r"'a'.*3 bytes.*24 rows.*3 rows"):
+        run_outputs({"a": Nullable(data, np.zeros(3, dtype=np.uint8))})
+    with pytest.raises(ValueError, match=r"'a'.*0 bytes"):
+        run_outputs({"a": Nullable(data, np.zeros(0, dtype=np.uint8))})
+
+
+def test_a_bitmap_that_is_not_packed_uint8_is_refused():
+    # A boolean mask is the natural mistake, and its bytes would read as bits.
+    data = np.array([1, 2, 3], dtype=np.int64)
+    with pytest.raises(TypeError, match=r"'a'.*bool"):
+        run_outputs({"a": Nullable(data, np.array([True, False, True]))})
+    with pytest.raises(TypeError, match=r"'a'.*2-dimensional"):
+        run_outputs({"a": Nullable(data, np.zeros((1, 1), dtype=np.uint8))})
+
+
+def test_a_handed_out_bitmap_is_refused_on_a_resized_column():
+    # A packed bitmap cannot tell 2 rows from 3: both are one byte. A UDF that
+    # drops a row and passes the batch's bitmap through would get the dropped
+    # row's bit applied to the wrong row, silently, so that bitmap is only
+    # accepted on a column of the batch's own row count. A bitmap the UDF
+    # builds for its own rows goes through the byte check as before.
+    column = pa.array([None, 2, 3], type=pa.int64())
+    batch = pa.RecordBatch.from_arrays([column], names=["c"])
+
+    def drop_one(data_dict, bitmap_dict, broadcasts):
+        return {"c": Nullable(data_dict["c"][1:], bitmap_dict["c"])}
+
+    with pytest.raises(ValueError, match=r"'c'.*handed out.*3 rows.*2 rows"):
+        list(make_mapinarrow_func(drop_one, input_columns=["c"])(iter([batch])))
+
+    def own_bitmap(data_dict, bitmap_dict, broadcasts):
+        return {"c": Nullable(data_dict["c"][1:], np.packbits([1, 0], bitorder="little"))}
+
+    got = list(make_mapinarrow_func(own_bitmap, input_columns=["c"])(iter([batch])))[0]
+    assert got.column("c").to_pylist() == [2, None]
+
+
+def test_a_bare_tuple_is_a_sequence_not_a_pair():
+    # Only a Nullable is the pair. A tuple is the column it always was, a
+    # 2-tuple ending in None or an array included, which a rule on bare tuples
+    # would have read as data and bitmap.
+    assert run_outputs({"a": (1, 2, 3)}).column("a").to_pylist() == [1, 2, 3]
+    assert run_outputs({"a": ("x", "y")}).column("a").to_pylist() == ["x", "y"]
+    assert run_outputs({"a": (5, None)}).column("a").to_pylist() == [5, None]
+    listed = run_outputs({"a": ([1, 2], None)}).column("a")
+    assert listed.type == pa.list_(pa.int64()) and listed.to_pylist() == [[1, 2], None]
+    arrays = run_outputs({"a": (np.array([1, 2]), np.array([3, 4]))}).column("a")
+    assert arrays.type == pa.list_(pa.int64()) and arrays.to_pylist() == [[1, 2], [3, 4]]

@@ -11,23 +11,34 @@ layer before passing data to a user-supplied computation function.
 
 Usage::
 
-    from numbarrow.core.mapinarrow_factory import make_mapinarrow_func
+    from numbarrow.core.mapinarrow_factory import Nullable, make_mapinarrow_func
 
     def my_func(data_dict, bitmap_dict, broadcasts):
-        # data_dict:   {name: np.ndarray}, keyed by column, or by field name
-        #              for a struct column
-        # bitmap_dict: the same names, each a uint8 bitmap or None where every
-        #              value is valid; for a struct column the struct-level
-        #              validity is folded into each field's bitmap
+        # data_dict:   {name: np.ndarray} for a uniform column, or
+        #              {name: {field: np.ndarray}} for a struct column
+        # bitmap_dict: the same shape, each leaf a uint8 bitmap or None where
+        #              the column carries no validity buffer; for a struct
+        #              column the struct-level validity is folded into each
+        #              field's bitmap
         # broadcasts:  {key: value}
         result = ...
-        return {"output_col": result}
+        # A bare array carries no nulls out; Nullable(data, bitmap) keeps them,
+        # bitmap being the packed uint8 array bitmap_dict hands out, or None
+        return {"output_col": Nullable(result, bitmap_dict["input_col"])}
 
     udf = make_mapinarrow_func(my_func, broadcasts={"scale": 1.5})
     df_out = df_in.mapInArrow(udf, output_schema)
 
 Every name in ``data_dict`` is also a key of ``bitmap_dict``, so a batch that
 happens to contain no nulls is indexable exactly like one that does.
+
+On the way out a bare array carries no nulls: every null the UDF received
+comes back as whatever sat under it. ``Nullable(data, bitmap)`` keeps the
+column's validity, the bitmap being in the layout ``bitmap_dict`` hands out, so
+a UDF passes the input's validity through with
+``Nullable(result, bitmap_dict[column])`` and one that decides its own nulls
+hands back a bitmap of that layout; one that resizes the column needs a bitmap
+of its own, since a packed bitmap carries no row count.
 
 For a ``StructArray`` column the struct-level validity is folded into each
 field's bitmap, so a row that is null as a whole is visible to one ``is_null``
@@ -36,8 +47,9 @@ struct elements, NOT the outer list rows: a null outer row can be reported
 nowhere and also shifts the element-to-row mapping, so a list column whose
 ``null_count`` is non-zero raises ``NotImplementedError``.
 
-A name may be claimed only once: a struct field sharing a name with another
-selected column raises ``ValueError`` rather than replacing it.
+A struct or list-of-struct column's fields sit under the column's own name,
+``data_dict[column][field]``, so a field never shares a namespace with another
+column or with another struct's fields.
 
 See ``test_mapinarrow_spark.py`` in the `test suite
 <https://github.com/Goykhman/numbarrow/tree/main/test>`_ for a complete runnable example.
